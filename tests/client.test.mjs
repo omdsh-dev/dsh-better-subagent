@@ -270,9 +270,9 @@ test('ready：真实渲染表单 + 唯一 <style>，权限档与 src/config.js �
   const styles = byType(renderer, 'style')
   assert.equal(styles.length, 1)
   assert.match(styles[0].children[0], /\.bs-switch/)
-  assert.match(styles[0].children[0], /--cfg-accent:#3388BB/ )
-  assert.match(styles[0].children[0], /--cfg-accent-solid:#20709e/)
-  assert.match(styles[0].children[0], /\[data-ds-dark-theme\] \.bs-root\{--cfg-accent:#4eb0e8/ )
+  assert.match(styles[0].children[0], /--cfg-accent:var\(--dsw-alias-state-business-primary,#4176e6\)/)
+  assert.match(styles[0].children[0], /--cfg-accent-solid:var\(--dsw-alias-button-primary-fill,#0f1115\)/)
+  assert.match(styles[0].children[0], /--cfg-accent-text:color-mix\(in srgb,var\(--cfg-accent\) 72%,var\(--cfg-ink\)\)/)
   assert.equal(renderer.root.findAll((node) => String(node.props.className ?? '').includes('bs-root')).length, 1)
 
   // 单一页面标题；字段提示保留为无障碍描述，不再逐行显示信息图标。
@@ -283,7 +283,7 @@ test('ready：真实渲染表单 + 唯一 <style>，权限档与 src/config.js �
   assert.equal(header.findAllByType('p').length, 0, 'header has no generic subtitle')
   const routineHints = byType(renderer, 'p').filter((node) => /executableHint|profileHint/.test(textOf(node)))
   assert.ok(routineHints.length > 0, 'supplementary help remains available')
-  for (const hint of routineHints) assert.equal(hint.props.className, 'bs-srOnly', 'routine descriptions stay out of the visual form')
+  assert.ok(routineHints.every((hint) => String(hint.props.className).includes('bs-hint')), 'routine descriptions are visible in the form')
   assert.ok(byType(renderer, 'details').every((node) => node.props.className === 'bs-advanced'), 'only task-level advanced disclosures remain')
   const described = renderer.root.findAll((node) => host(node) && typeof node.props['aria-describedby'] === 'string')
   assert.ok(described.length >= 2, 'retained hints associate with their controls')
@@ -1013,7 +1013,7 @@ test('高级与依赖：默认折叠并给出非默认摘要，停用CLI保留�
   const advanced = byType(renderer, 'details').filter((node) => node.props.className === 'bs-advanced')
   assert.equal(advanced.length, 2)
   assert.ok(advanced.every((node) => node.props.open !== true))
-  assert.match(textOf(advanced[0].findByType('summary')), /customized.*2/)
+  assert.match(textOf(advanced[0].findByType('summary')), /expertSettings.*expertCurrent/)
   let restoredFocus = false
   const target = { open: true, querySelector: () => ({ focus() { restoredFocus = true } }) }
   const escape = { ...keyEvent('Escape'), currentTarget: target }
