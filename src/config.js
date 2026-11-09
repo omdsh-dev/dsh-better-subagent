@@ -14,8 +14,13 @@
  *     `src/panel.js`），改完即时生效、不重挂。
  *
  * 可编辑范围（volatile，即 dsh-settings 投影出的行配置表单字段）：
- * `childExitGuard`、`tiers.fast`、`tiers.quality`、`subagents.eng`、
- * `subagents.global`、`subagents.codex.*`、`subagents.claude.*`、`trustedHosts`。
+ * `childExitGuard`、`delegation.prompt`、`tiers.fast`、`tiers.quality`、
+ * `subagents.eng`、`subagents.global`、`subagents.codex.*`、`subagents.claude.*`、
+ * `trustedHosts`。
+ *
+ * `delegation.prompt` 只决定 `better-subagent:delegation` 提示词段是否渲染（默认
+ * 开启、对所有预设生效）；`subagents.eng/global` 只管 CLI 后端路由与 CLI 目录段，
+ * 两者互不影响。
  * 表单写入只能落在 volatile 路径上（dsh-settings 会拒绝其他路径）。
  *
  * 读取入口：
@@ -116,12 +121,17 @@ export const TIER_NAMES = Object.freeze(['fast', 'quality'])
 /**
  * 本插件行的正式配置 schema。
  *
- * `childExitGuard`、`subagents.{eng,global}`、`subagents.{codex,claude}`、
- * `trustedHosts` 全部标 volatile（即时生效、不重挂）：信任边界按请求重读活配置。
+ * `childExitGuard`、`delegation.prompt`、`subagents.{eng,global}`、
+ * `subagents.{codex,claude}`、`trustedHosts` 全部标 volatile（即时生效、不重挂）：信任边界按请求重读活配置。
  */
 export const Config = z.object({
   /** 运行中子代理退出拦截总开关（默认关闭，显式开启才拦回合结束）。 */
   childExitGuard: z.boolean().default(false).volatile(),
+  /** 委派提示词段（`better-subagent:delegation`）；与 CLI 路由范围 `subagents.*` 无关。 */
+  delegation: z.object({
+    /** 是否把委派纪律与模型分档渲染进系统提示词（默认开启，对所有预设生效）。 */
+    prompt: z.boolean().default(true).volatile(),
+  }),
   /** 子代理模型分档（工程模式提示词按此渲染；路由须在 allowedModels 白名单内）。 */
   tiers: z.object({
     fast: TierSchema,
@@ -248,15 +258,17 @@ function tierOf(value) {
  * 输入可以是 `entry.fiber.config`（volatile 字段是引用对象）、旧 JSON 文档、
  * 残缺对象或 `undefined`；返回值总是全新的、可安全改写的普通对象。
  * @param config - 任意配置值。
- * @returns `{ childExitGuard, tiers: { fast, quality }, subagents: { eng, global, codex, claude }, trustedHosts }`。
+ * @returns `{ childExitGuard, delegation: { prompt }, tiers: { fast, quality }, subagents: { eng, global, codex, claude }, trustedHosts }`。
  */
 export function normalizeConfig(config) {
   const projected = plain(config)
   const source = isRecord(projected) ? projected : {}
   const subagents = isRecord(source.subagents) ? source.subagents : {}
   const tiers = isRecord(source.tiers) ? source.tiers : {}
+  const delegation = isRecord(source.delegation) ? source.delegation : {}
   return {
     childExitGuard: booleanOf(source.childExitGuard, false),
+    delegation: { prompt: booleanOf(delegation.prompt, true) },
     tiers: { fast: tierOf(tiers.fast), quality: tierOf(tiers.quality) },
     subagents: {
       eng: booleanOf(subagents.eng, true),
