@@ -15,7 +15,7 @@
  * with the session header/projection as fallback.
  */
 
-import { currentConfig, normalizeConfig } from './config.js'
+import { currentConfig } from './config.js'
 import { enabledIn } from './cli-adapter.js'
 import { cliCatalog } from './subagents.js'
 
@@ -28,9 +28,6 @@ export const DELEGATION_ORDER = 60
 export const CHILD_GUARD_ORDER = 70
 export const CLI_CATALOG_ORDER = 80
 
-/** Presets that opt into the eng-scope subagent behavior. */
-export const ENG_PRESETS = Object.freeze(['eng', 'eng-ptc'])
-
 const DELEGATION_HEAD = `## Delegation
 - Subagents cannot see this conversation: state the goal, write scope, deliverable, and verification, and give real file paths for prior outputs.
 - Opening reconnaissance: when starting non-trivial work in an unfamiliar or large codebase, immediately dispatch fast-tier scouts in parallel (structure, relevant modules, conventions, test entry points), all in one message; the main agent reads only the instruction files that define the task. A scout prompt needs only goal, boundaries, and deliverable.
@@ -39,8 +36,8 @@ const DELEGATION_HEAD = `## Delegation
 
 const FANOUT_PTC = '- For repeated same-shaped work, dispatch all subagents inside one run_code program, then collect them with wait_subagent.'
 
-const DELEGATION_TAIL = `- Do not repeatedly prod normally running subagents with send_message, poll list_agents frequently, or interrupt them with interrupt_agent. Intervene only for substantive new information, corrections, clear failure or blockage, or a user request to stop.
-- Do independent work first; when progress truly depends on subagent results, wait patiently with wait_subagent for all needed results together.
+const DELEGATION_TAIL = `- Waiting is done with wait_subagent only: do independent work first, then pass every id you need to a single wait_subagent call and let it block. Do not end the turn to wait for a notification unless nothing else is left to do.
+- send_message is for new information or a correction, never for asking about progress, nudging, or checking in. Do not poll list_agents in place of waiting, and do not interrupt_agent a normally running subagent; intervene only for substantive new information, a clear failure or blockage, or a user request to stop.
 - A wait_subagent timeout while a subagent is still running is not a failure: wait again or do independent work. Do not re-dispatch or take over solely because it is taking a long time.
 - The main agent owns integration, review, and final verification. Subagent reports are leads, not evidence: check the actual changes yourself.
 - When a subagent ends in an error or empty result, read why, fix the cause, and re-dispatch once; take over in the main thread only if it fails again without an external blocker, and say why.`
@@ -57,7 +54,8 @@ export function renderTier(tier) {
 }
 
 /**
- * Render the delegation + model-tier section.
+ * Render the delegation + model-tier section. Scope gating (the
+ * `delegation.prompt` switch) happens in the caller, not here.
  * @param config - normalized Better Subagent config (`tiers`).
  * @param options - `{ ptc }` (true for the eng-ptc preset).
  * @returns the section markdown; never empty (scope gating happens outside).
@@ -110,13 +108,6 @@ export function presetOf(ctx, agent) {
   return preset
 }
 
-/** Whether the preset participates in the subagent scope. */
-export function scopeEnabled(config, agent, preset) {
-  if (normalizeConfig(config).subagents.global) return true
-  if (!normalizeConfig(config).subagents.eng) return false
-  return ENG_PRESETS.includes(preset)
-}
-
 /**
  * Register the per-agent prompt sections.
  * @param ctx - context with systemPrompt + agents.
@@ -138,8 +129,8 @@ export function installPromptSections(ctx, config) {
       interpolate: false,
       text: () => {
         const live = currentConfig(ctx, config)
+        if (!live.delegation.prompt) return ''
         const preset = currentPreset()
-        if (!scopeEnabled(live, agent, preset)) return ''
         return renderDelegation(live, { ptc: typeof preset === 'string' && preset.endsWith('ptc') })
       },
     })

@@ -330,6 +330,7 @@ test('同一 act 内连续编辑 → 单次 mutate（真实 hooks 状态队列�
   await act(async () => {
     byId(renderer, 'bs-child-exit-guard').props.onClick()
     byId(renderer, 'bs-scope-global').props.onClick()
+    byId(renderer, 'bs-delegation-prompt').props.onClick()
     setControlValue(byId(renderer, 'bs-codex-permission'), 'workspace-write')
     setControlValue(byLabel(renderer, 'modelIdPlaceholder 1'), 'gpt-5.1')
   })
@@ -337,6 +338,7 @@ test('同一 act 内连续编辑 → 单次 mutate（真实 hooks 状态队列�
   assert.deepEqual(page.controller.calls, [])
   assert.equal(byId(renderer, 'bs-child-exit-guard').props['aria-checked'], true)
   assert.equal(byId(renderer, 'bs-scope-global').props['aria-checked'], true)
+  assert.equal(byId(renderer, 'bs-delegation-prompt').props['aria-checked'], false)
   assert.equal(saveButton(renderer).props.disabled, false)
 
   await page.run(async () => { saveButton(renderer).props.onClick() })
@@ -344,6 +346,7 @@ test('同一 act 内连续编辑 → 单次 mutate（真实 hooks 状态队列�
   assert.equal(page.controller.calls[0].revision, 1)
   assert.deepEqual(page.controller.calls[0].ops, [
     { op: 'set', path: ['childExitGuard'], value: true },
+    { op: 'set', path: ['delegation', 'prompt'], value: false },
     { op: 'set', path: ['subagents', 'global'], value: true },
     { op: 'set', path: ['subagents', 'codex', 'permissionMode'], value: 'workspace-write' },
     { op: 'set', path: ['subagents', 'codex', 'defaultModel'], value: 'gpt-5.1' },
@@ -352,6 +355,26 @@ test('同一 act 内连续编辑 → 单次 mutate（真实 hooks 状态队列�
   await page.update()
   assert.match(pageText(renderer), /saved/)
   assert.equal(saveButton(renderer), undefined)
+})
+
+test('委派提示词开关：缺省即开启、显式 false 才渲染为关、只在变化时写入', async () => {
+  // 宿主快照完全没有 delegation 键（旧 profile）：默认开启，不产生任何写入。
+  const plain = await mountPage()
+  assert.equal(byId(plain.renderer, 'bs-delegation-prompt').props['aria-checked'], true)
+  assert.equal(saveButton(plain.renderer), undefined)
+
+  // 显式 false 渲染为关，切回开启写出一个 set 操作。
+  const off = await mountPage({ form: { value: { ...READY, delegation: { prompt: false } } } })
+  const renderer = off.renderer
+  assert.equal(byId(renderer, 'bs-delegation-prompt').props['aria-checked'], false)
+  await off.run(async () => { byId(renderer, 'bs-delegation-prompt').props.onClick() })
+  assert.equal(byId(renderer, 'bs-delegation-prompt').props['aria-checked'], true)
+  await off.run(async () => { await saveButton(renderer).props.onClick() })
+  assert.deepEqual(off.controller.calls[0].ops, [{ op: 'set', path: ['delegation', 'prompt'], value: true }])
+
+  // 非布尔垃圾值同样按默认（开启）渲染，不显示为关闭。
+  const junk = await mountPage({ form: { value: { ...READY, delegation: { prompt: 'off' } } } })
+  assert.equal(byId(junk.renderer, 'bs-delegation-prompt').props['aria-checked'], true)
 })
 
 test('saving 与 conflict：挂起态、false 回退宿主值、抛错保留草稿', async () => {

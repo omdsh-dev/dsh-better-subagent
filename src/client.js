@@ -137,6 +137,8 @@ window.__ModuleLoader__.load({
 			readonly: "当前连接仅供查看，无法保存设置。",
 			childExitGuardLabel: "等待子代理完成",
 			childExitGuardHint: "子代理仍在运行时继续等待；按 Esc 仍可中断。",
+			delegationPromptLabel: "委派提示词",
+			delegationPromptHint: "把委派纪律与模型分档写进系统提示词，对所有预设生效；与 CLI 接入范围无关。",
 			tiersTitle: "子代理模型选择",
 			tiersIntro: "为工程预设推荐子代理模型；实际调用仍需符合允许使用的模型范围。",
 			tierFast: '快速档',
@@ -298,6 +300,8 @@ window.__ModuleLoader__.load({
 			readonly: "This connection is view-only. Settings cannot be saved.",
 			childExitGuardLabel: "Wait for subagents to finish",
 			childExitGuardHint: "Keep waiting while subagents run. You can still interrupt with Esc.",
+			delegationPromptLabel: "Delegation prompt",
+			delegationPromptHint: "Adds the delegation rules and model tiers to the system prompt for every preset; independent of the CLI scope.",
 			tiersTitle: "Subagent model selection",
 			tiersIntro: "Recommend subagent models in engineering presets; calls must still use a permitted model.",
 			tierFast: 'Fast tier',
@@ -603,6 +607,7 @@ window.__ModuleLoader__.load({
 			const tiers = isRecord(source.tiers) ? source.tiers : {};
 			const result = {
 				childExitGuard: source.childExitGuard === true,
+				delegationPrompt: !isRecord(source.delegation) || source.delegation.prompt !== false,
 				trustedHosts: Array.isArray(source.trustedHosts) ? [...new Set(source.trustedHosts.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))] : [],
 				tiers: {},
 				subagents: {
@@ -634,6 +639,9 @@ window.__ModuleLoader__.load({
 			}
 			if (host.childExitGuard !== current.childExitGuard) {
 				ops.push({ op: 'set', path: ['childExitGuard'], value: current.childExitGuard });
+			}
+			if (host.delegationPrompt !== current.delegationPrompt) {
+				ops.push({ op: 'set', path: ['delegation', 'prompt'], value: current.delegationPrompt });
 			}
 			for (const tier of TIERS) {
 				if (JSON.stringify(host.tiers[tier]) === JSON.stringify(current.tiers[tier])) continue;
@@ -1462,6 +1470,8 @@ window.__ModuleLoader__.load({
 						!scopeActive ? h('p', { className: 'bs-note', 'data-tone': 'warn' }, translate('scopeNone')) : null),
 					h('section', { className: 'bs-section' },
 						h('div', { className: 'bs-sectionHead' }, h('h3', { className: 'bs-sectionTitle' }, translate('behaviorTitle'))),
+						h(SwitchRow, { id: 'bs-delegation-prompt', label: translate('delegationPromptLabel'), hint: translate('delegationPromptHint'),
+							checked: live.delegationPrompt, disabled: !writable || busy, onChange: (delegationPrompt) => edit((current) => ({ ...current, delegationPrompt })) }),
 						h(SwitchRow, { id: 'bs-child-exit-guard', label: translate('childExitGuardLabel'), hint: translate('childExitGuardHint'),
 							checked: live.childExitGuard, disabled: !writable || busy, onChange: (childExitGuard) => edit((current) => ({ ...current, childExitGuard })) })),
 					h('section', { className: 'bs-section', 'aria-label': translate('readonlyDiagnostics') },

@@ -22,7 +22,8 @@
 
 - 行 `name` 必须是 scoped npm 名：Loader 把它当模块 specifier 解析，`dsh-client-modules` 还要求 manifest 的 `name` 与行完全一致才能发现 `./client`。
 - 不允许再插入 agent preset 行；本插件不提供 preset。
-- 行 `Config` 在 `src/config.js`，由 `src/index.js` 重新导出。全部字段 volatile：`childExitGuard`、`tiers.fast/quality`、`subagents.eng/global`、`subagents.codex.*`、`subagents.claude.*`、`trustedHosts`（信任边界按请求重读活配置，保存即生效不重挂）。
+- 行 `Config` 在 `src/config.js`，由 `src/index.js` 重新导出。全部字段 volatile：`childExitGuard`、`delegation.prompt`、`tiers.fast/quality`、`subagents.eng/global`、`subagents.codex.*`、`subagents.claude.*`、`trustedHosts`（信任边界按请求重读活配置，保存即生效不重挂）。
+- `delegation.prompt`（默认 `true`）只决定 `better-subagent:delegation` 提示词段是否渲染，**对所有预设生效**；`subagents.eng/global` 只管 CLI 后端路由与 CLI 目录段。两者互不影响：把 CLI 范围全关掉，委派纪律照样渲染。
 - `normalizeConfig` 会把任意来源（volatile 引用、旧 JSON、残缺对象）规整成精确默认形状；非法值回退默认、绝不抛错。`currentConfig(ctx, fallback)` 经 `configEditor` 找**活**行配置；找不到时回退 `fallback`。
 - **命名**：S1 Spec 的 unscoped 名 `dsh-better-subagent` 已被他人占用，现使用 scoped 包名 `@oh-my-dsh/dsh-better-subagent`；行 id 仍是 `dsh-better-subagent`，行 name 与 client closure id 必须是 scoped 包名，短键 `dsh-better-subagent#dsh-better-subagent` 只作兼容别名保留。旧 `@menghuan1918/dsh-better-subagent` 作为 legacy 键保留。
 - 行配置键（浏览器半边 `plugins.row.config`）六份，全部指向同一行：
@@ -95,7 +96,7 @@
 
 | 名称 | order | 出现条件 | 内容 |
 |---|---|---|---|
-| `better-subagent:delegation` | 60 | `subagents.global` 或（`subagents.eng` 且 preset ∈ {eng, eng-ptc}） | 委派纪律 + fast/quality 分档；preset 以 `ptc` 结尾时追加 run_code fanout 规则 |
+| `better-subagent:delegation` | 60 | `delegation.prompt` | 委派纪律（含等待纪律）+ fast/quality 分档；preset 以 `ptc` 结尾时追加 run_code fanout 规则 |
 | `better-subagent:child-guard` | 70 | `childExitGuard` | 运行中子代理退出守卫措辞 |
 | `better-subagent:cli-subagents` | 80 | 路由范围 + 至少一个后端 enabled | 旧 CLI 目录内容（provider、后台、send_message/wait_subagent/list_agents/interrupt_agent、模型/effort 目录） |
 
@@ -115,7 +116,7 @@ preset 解析优先 `agentPresets.composedPreset(agent.ctx)`，回退 `sessionPr
 - 使用 `form.state`（`{status, value, revision, writable, mode}`）与 `form.mutate(ops, revision)`；只在保存时提交与宿主快照的差异 `set` ops。
 - 可写字段只包含 volatile 路径；`writable === false` / `mode === 'memory'` 禁用配置写入控件，保留页签导航与只读探测刷新；冲突（mutate 返回 false）回退宿主值并提示；异常保留草稿。
 - 六份 `plugins.row.config` 键注册同一个组件；locale 命名空间 `better-subagent`（zh/en 字典键一致）。
-- 表单分为概览、CLI（Codex / Claude）、模型分档、连接；覆盖 scope（eng/global）、fast/quality（路由 + effort）、两个后端（enabled/executable/profile/permission/defaultModel/models + 自动发现）、childExitGuard 与 trustedHosts。页签支持方向键 / Home / End，切换保留草稿和未输入完的 effort 文本。说明使用标签旁的原生信息折叠控件，保留 aria-describedby 与控件关联。
+- 表单分为概览、CLI（Codex / Claude）、模型分档、连接；覆盖 scope（eng/global）、fast/quality（路由 + effort）、两个后端（enabled/executable/profile/permission/defaultModel/models + 自动发现）、delegationPrompt、childExitGuard 与 trustedHosts。页签支持方向键 / Home / End，切换保留草稿和未输入完的 effort 文本。说明使用标签旁的原生信息折叠控件，保留 aria-describedby 与控件关联。
 - 依赖：重命名默认模型会同步默认选择，删除时清空；effort 列表变更会清空失效默认 effort。后端停用时仍可提前编辑配置；scope 全关闭时提示路由不可见。未保存 executable / profile 时禁用模型发现，保存 revision 变更后重读探针；请求期间路径 / profile 改变、放弃改动或 revision 更新都会丢弃旧目录。失效请求会结束自己的加载状态，旧请求不会覆盖新一次发现的状态。
 - 校验：模型 id 非空且唯一；启用的后端必须有模型、默认模型与默认 effort；白名单读到时已存分档路由必须在白名单内，已选 effort 必须属于模型提供的候选列表；trustedHosts 接受不含协议和路径的主机名或 host:port。已存但不在候选中的值保留并标注，不静默改值。分档本身只是提示词建议，实际子代理路由仍由宿主模型选择策略决定。
 

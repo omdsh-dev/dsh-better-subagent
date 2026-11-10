@@ -38,6 +38,7 @@ import {
 const EMPTY_TIER = { provider: '', model: '', reasoningEffort: '' }
 const EXPECTED_DEFAULT = {
   childExitGuard: false,
+  delegation: { prompt: true },
   tiers: { fast: EMPTY_TIER, quality: EMPTY_TIER },
   subagents: {
     eng: true,
@@ -196,6 +197,7 @@ test('volatile 路径恰好是设置页可编辑集合', () => {
   walk(liveSchema, [])
   assert.deepEqual(paths.sort(), [
     'childExitGuard',
+    'delegation.prompt',
     'subagents.claude',
     'subagents.codex',
     'subagents.eng',
@@ -244,6 +246,7 @@ test('normalizeConfig：展开 volatile 引用（含嵌套）', () => {
   }
   assert.deepEqual(normalizeConfig(config), {
     childExitGuard: true,
+    delegation: { prompt: true },
     tiers: { fast: EMPTY_TIER, quality: EMPTY_TIER },
     subagents: {
       eng: false,
@@ -359,7 +362,7 @@ test('normalizeConfig：返回全新普通对象（可安全改写、两次调�
 test('dsh-settings 投影：表单字段恰好是 volatile 集合（全部字段可编辑）', () => {
   const form = volatileForm(liveSchema)
   assert.equal(form?.type, 'object')
-  assert.deepEqual(Object.keys(form.dict).sort(), ['childExitGuard', 'subagents', 'tiers', 'trustedHosts'])
+  assert.deepEqual(Object.keys(form.dict).sort(), ['childExitGuard', 'delegation', 'subagents', 'tiers', 'trustedHosts'])
   const resolved = Config({
     childExitGuard: true,
     trustedHosts: ['dsh.example.com'],
@@ -368,6 +371,7 @@ test('dsh-settings 投影：表单字段恰好是 volatile 集合（全部字段
   const value = projectForm(form, plainConfig(resolved))
   assert.deepEqual(value, {
     childExitGuard: true,
+    delegation: { prompt: true },
     trustedHosts: ['dsh.example.com'],
     tiers: { fast: EMPTY_TIER, quality: EMPTY_TIER },
     subagents: {
