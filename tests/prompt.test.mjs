@@ -125,7 +125,7 @@ test('waiting discipline: wait_subagent blocks, send_message never nudges, timeo
     for (const preset of ['eng', 'eng-ptc', 'standard']) {
       const text = textOf(ctx.create({ preset }), 'better-subagent:delegation')
       // Waiting is the wait tool's job, and it must block rather than poll.
-      assert.match(text, /Waiting is done with wait_subagent only/)
+      assert.match(text, /Waiting for delegated subagents is done with wait_subagent only/)
       assert.match(text, /single wait_subagent call and let it block/)
       assert.match(text, /Do not end the turn to wait for a notification/)
       // send_message is for new information only.

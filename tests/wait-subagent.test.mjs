@@ -57,7 +57,13 @@ function makeCtx({ children = [], sessionQuery } = {}) {
     agentStatus,
     sessionQuery: logs,
     on: (event, fn) => { handlers.set(event, fn); return () => {} },
-    subagents: { listChildren: async () => children },
+    // rc.2 exposes only the recursive walk; direct-child rows are depth one.
+    // Names resolve to themselves in these fixtures; tests that use durable ids
+    // exercise the single-token fallback.
+    subagents: {
+      listDescendants: async () => children.map((child) => ({ depth: 1, ...child })),
+      resolveName: async (_parent, ref) => ref,
+    },
     agents: { get: (id) => agentStatus.get(id) },
     tools: { register: (definition) => { tool = definition; return () => {} } },
   }
@@ -136,6 +142,16 @@ test('already-finished child with a matching settlement → immediate done', asy
   ctx.agentStatus.set('child-1', { status: 'idle' })
   const out = await ctx.getTool().execute({ subagent_id: ['child-1'] }, makeExec())
   assert.equal(out, DONE('child-1'))
+})
+
+test('rc.2 name resolves to the durable id and is echoed in the done line', async () => {
+  const ctx = makeCtx({ children: [{ id: 'child-1', name: 'planner', path: 'planner' }] })
+  ctx.subagents.resolveName = async (_parent, ref) => ref === 'planner' ? 'child-1' : ref
+  fireStart(ctx, { id: 'child-1', runId: 'r1' })
+  fireEnd(ctx, { id: 'child-1', runId: 'r1', stopReason: 'completed' })
+  ctx.agentStatus.set('child-1', { status: 'idle' })
+  const out = await ctx.getTool().execute({ subagent_id: ['planner'] }, makeExec())
+  assert.equal(out, DONE('planner'))
 })
 
 test('CROSS-TURN REGRESSION: old end → new start + queued input while idle → running → new end', async () => {

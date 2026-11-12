@@ -7,7 +7,7 @@
 - 纯 ESM、无构建步骤；宿主入口 `src/index.js`，浏览器入口 `src/client.js`。
 - `package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`；`dsh.client.platform = "web"`。
 - `files` 白名单：`src`、`docs`、`cordis.patch.yml`、`README.md`、`LICENSE`、`third-party`。测试、脚本、设计 Spec、凭据、临时 profile 都不进发布包。
-- 依赖：运行时只直接 import `@deepseek-ai/schemastery`；其余 DSH 包是精确 peer（`0.2.2-rc.1`），由宿主运行环境提供，服务全部经 `ctx` 获取。
+- 依赖：运行时只直接 import `@deepseek-ai/schemastery`；其余 DSH 包是精确 peer（`0.2.2-rc.2`），由宿主运行环境提供，服务全部经 `ctx` 获取。
 - 浏览器半边只 `require('react')`，不 import 任何 DSH client 包；样式全部使用宿主主题 token（`--dsw-alias-*`），不写 DOM。
 
 ## 2. 宿主行与配置
@@ -50,13 +50,13 @@
 
 ## 4. CLI 桥（`src/subagents.js` + `src/cli-adapter.js` + `src/cli/*`）
 
-- 不注册第二个 spawn/fork registry；CLI 子代理仍是原生 `subagents.startActivation({provider:'spawn', childId, ...})`，只是 `agentOptions.provider` 是内部 synthetic route。
+- 不注册第二个 spawn/fork registry；CLI 子代理仍是原生 `subagents.startActivation({provider:'spawn', childId, parent, prompt, ...})`，只是 `agentOptions.provider` 是内部 synthetic route。rc.2 的 spec 是扁平对象，返回 `{childId, name}`；工具结果只回传 `{kind:'activation', name}`。
 - 内部 route 历史固定为 `apollo-cli-codex` / `apollo-cli-claude`；不要为新包名重命名，否则旧会话不可续接。
 - 拦截点：
   - `ctx.tools.guard`：内部 route 保留、禁用范围明确拒绝、fork 拒绝；
   - `ctx.tools.execute`：`subagent` + `provider=codex|claude` 短路创建；`list_subagent_models` 合并 CLI 目录；
   - `ctx.on('tools/result')`：未被调用方接受的 child 回收（drain + 删 KV）。
-- 创建流程：模型/effort 白名单校验 → 父当前目录解析（`workingDirectory.ensure`）→ `resolveExecutable` 预检 → `<executable> --version` 版本预检（`src/cli/version.js`：Codex 基线 `0.162.1`，Claude 基线 `2.1.300`；无法执行/无法识别/过旧都给出点名可执行文件与安装/升级方式的可操作错误）→ 先落 KV 再 `startActivation` → 失败/取消 drain + 删记录。`ctx.cliVersionProbe` 是测试 seam；真实运行时用 `execFile`，无 shell。
+- 创建流程：模型/effort 白名单校验 → 父当前目录解析（`workingDirectory.ensure`）→ `resolveExecutable` 预检 → `<executable> --version` 版本预检（`src/cli/version.js`：Codex 基线 `0.162.1`，Claude 基线 `2.1.300`；无法执行/无法识别/过旧都给出点名可执行文件与安装/升级方式的可操作错误）→ 先落 KV 再 `startActivation` → 已发布 activation 在失败/取消时 `dispose()`，再删记录；预发布失败由 rc.2 manager 回滚。`ctx.cliVersionProbe` 是测试 seam；真实运行时用 `execFile`，无 shell。
 - 每个 adapter：一轮一个子进程；`delivered` 在 spawn 前落 KV；`remoteId` 第一行事件即落盘；`parse` 失败/非零退出/缺完成标志都抛错且不自动重试；`dispose()` 等待进程句柄退出。没有 `subprocess` 服务或 spawn 未发布时回滚 `started/delivered`。
 - 身份 KV（`src/cli-sessions.js`）：命名空间前缀 `apollo_cli_` + `sha256(profile.dir)[:16]`，version 1，`sessions` 表，`per-record`。**包名变化不重命名/复制/清空**。
 - 权限/模型/effort 与父子归属在启动前失败；缺 CLI 或版本不兼容给可操作诊断，不回退到另一后端。
@@ -64,6 +64,8 @@
 ## 5. wait_subagent 的跨回合判定（`src/wait-subagent.js`）
 
 旧实现的缺陷：`settled` 只按 childId 缓存 `subagent/end`，当同一 child 被续接（新 activation 或 resident 新回合）时会把旧 end 当成本轮完成。
+
+参数先经 `ctx.subagents.resolveName(parent, ref, signal)` 解析：rc.2 的 `list_agents` 和原生 `subagent` 结果都以树内名字为句柄，单个无法匹配的 token 仍按 durable id 处理。解析后再校验是否为当前 Agent 的直接子代理，输出行回显调用方给的名字。
 
 现实现只依据宿主可证明的事实：
 
@@ -85,7 +87,7 @@
 ## 6. 子代理退出守卫（`src/child-exit-guard.js`）
 
 - 只由 volatile `childExitGuard`（默认 false）控制；
-- 只听 `agent/turn-stopping`，只收集 `subagents.listChildren(agent.id)` 中 **live status === running** 的直接子代理；
+- 只听 `agent/turn-stopping`，只收集 `subagents.listDescendants(agent.id)` 中 `depth === 1` 且 **live status === running** 的直接子代理；
 - 只做一次 `agent.steer(buildChildGuardMessage(children))`；
 - 查询/注入异常 → 告警并放行（fail open）；`payload.signal.aborted` 直接返回；
 - 不看 jobs、不 import Apollo、不扩大权限。

@@ -36,7 +36,8 @@ const DELEGATION_HEAD = `## Delegation
 
 const FANOUT_PTC = '- For repeated same-shaped work, dispatch all subagents inside one run_code program, then collect them with wait_subagent.'
 
-const DELEGATION_TAIL = `- Waiting is done with wait_subagent only: do independent work first, then pass every id you need to a single wait_subagent call and let it block. Do not end the turn to wait for a notification unless nothing else is left to do.
+const DELEGATION_TAIL = `- Waiting for delegated subagents is done with wait_subagent only: do independent work first, then pass every subagent name (or durable id) you need to a single wait_subagent call and let it block. Do not end the turn to wait for a notification unless nothing else is left to do.
+- list_agents shows the tree with names; send_message targets a name, and wait_subagent accepts the name returned by subagent.
 - send_message is for new information or a correction, never for asking about progress, nudging, or checking in. Do not poll list_agents in place of waiting, and do not interrupt_agent a normally running subagent; intervene only for substantive new information, a clear failure or blockage, or a user request to stop.
 - A wait_subagent timeout while a subagent is still running is not a failure: wait again or do independent work. Do not re-dispatch or take over solely because it is taking a long time.
 - The main agent owns integration, review, and final verification. Subagent reports are leads, not evidence: check the actual changes yourself.
@@ -81,7 +82,7 @@ export function renderCliCatalog(config) {
   return [
     'Better Subagent CLI subagents: subagent also accepts provider="codex" or provider="claude"; model and reasoning_effort default to Better Subagent settings (list_subagent_models with that provider shows allowed values).',
     'They always run in the background, start in cwd (default: current directory) with permissions from Better Subagent settings; subagent_fork and agent_preset are unsupported.',
-    'Control them by child id with send_message, wait_subagent, list_agents and interrupt_agent.',
+    'Control them through list_agents names with send_message; wait_subagent accepts the name returned by subagent, and interrupt_agent is disabled in the engineering presets.',
     catalog,
   ].join('\n')
 }

@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@oh-my-dsh/dsh-better-subagent"><img src="https://img.shields.io/npm/v/%40oh-my-dsh%2Fdsh-better-subagent.svg" alt="npm 版本"></a>
   <a href="LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/github/license/omdsh-dev/dsh-better-subagent?color=blue"></a>
-  <a href="package.json"><img alt="DSH 0.2.2-rc.1" src="https://img.shields.io/badge/DSH-0.2.2--rc.1-4B32C3"></a>
+  <a href="package.json"><img alt="DSH 0.2.2-rc.2" src="https://img.shields.io/badge/DSH-0.2.2--rc.2-4B32C3"></a>
   <a href="https://github.com/omdsh-dev/dsh-better-dsh"><img alt="Part of Better DSH" src="https://img.shields.io/badge/part%20of-dsh--better--dsh-2F80B7"></a>
 </p>
 
@@ -42,7 +42,7 @@
 
 ```sh
 # 只安装这个插件
-dsh plugin --profile <profile> add @oh-my-dsh/dsh-better-subagent@0.5.2
+dsh plugin --profile <profile> add @oh-my-dsh/dsh-better-subagent@0.5.3
 
 # 或安装 Better DSH（会自动带上所有独立插件）
 dsh plugin --profile <profile> add dsh-better-dsh@0.10.1
@@ -57,7 +57,7 @@ dsh plugin --profile <profile> add dsh-better-dsh@0.10.1
 | 稳定行 id | `dsh-better-subagent` |
 | 入口 / 工具 | `wait_subagent` · `/better-subagent/api/*` · 子代理设置页 |
 | 设置 | `childExitGuard`、`delegation.prompt`、`tiers.*`、两个 CLI 后端、`trustedHosts` |
-| npm 包 | `@oh-my-dsh/dsh-better-subagent@0.5.2` |
+| npm 包 | `@oh-my-dsh/dsh-better-subagent@0.5.3` |
 | 仓库 | https://github.com/omdsh-dev/dsh-better-subagent |
 
 ## 设置
