@@ -32,6 +32,18 @@
  * present; `apply` wires it behind `ctx.inject`.
  */
 
+import type { Context } from '@deepseek-ai/cordis'
+import type { SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
+import type { SessionObservation } from '@deepseek-ai/dsh-session-query'
+import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
+import type {} from '@deepseek-ai/dsh-subagent'
+
+type Settlement = { runId?: string; local?: boolean; stopReason?: string }
+type Evaluation = { kind: 'running' | 'pending-input' | 'new-activation' | 'awaiting-end' | 'observation-changed' | 'unconfirmed' | 'ended-earlier' | 'settled'; info?: Settlement; reason?: TurnEndReason | 'state-unreadable' }
+type Outcome = { kind: 'aborted' | 'timedOut' | 'notStarted' | 'unconfirmed' | 'endedEarlier' | 'settled'; info?: Settlement; reason?: TurnEndReason }
+type Waiter = ((outcome: Outcome) => void) & { check?: () => Promise<void> }
+type WaitArguments = { subagent_id?: string[]; timeout_ms?: number }
+
 export const name = 'tool-wait-subagent'
 
 export const inject = ['tools', 'subagents', 'agents', 'sessionQuery']
@@ -45,27 +57,28 @@ export const MIN_TIMEOUT_MS = 15 * 60_000
 /** Status polling interval while waiting. */
 export const POLL_MS = 250
 
-const DONE = (id, stopReason) => `subagent ${id} done (${stopReason || 'completed'}); its closing message follows as the settlement notice.`
+const DONE = (id: string, stopReason: string | undefined) => `subagent ${id} done (${stopReason || 'completed'}); its closing message follows as the settlement notice.`
 
 /**
  * Install the tool on a context that already exposes all injected services.
  * @param ctx - runtime context with tools/subagents/agents/sessionQuery.
  * @returns disposer for the tool registration and event listeners.
  */
-export function installWaitTool(ctx) {
+export function installWaitTool(ctx: Context, config?: unknown): () => void
+export function installWaitTool(ctx: Context) {
   /** childId -> { runId, stopReason } — compact settlement projection (no child content retained). */
-  const settled = new Map()
+  const settled = new Map<SessionId, Settlement>()
   /** childId -> { runId } — the most recent activation start observed since mount. */
-  const started = new Map()
+  const started = new Map<SessionId, { runId?: string }>()
   /** childId -> Set<finish(outcome)> — active waiters. */
-  const waiters = new Map()
+  const waiters = new Map<SessionId, Set<Waiter>>()
 
-  const statusOf = (id) => {
+  const statusOf = (id: SessionId) => {
     const agent = ctx.agents.get(id)
     return agent === undefined ? 'ready' : agent.status === 'running' ? 'running' : 'idle'
   }
 
-  const notify = (id) => {
+  const notify = (id: SessionId) => {
     const list = waiters.get(id)
     if (list === undefined) return
     for (const finish of [...list]) void finish.check?.()
@@ -99,8 +112,8 @@ export function installWaitTool(ctx) {
    * @param id - durable child session id.
    * @returns folded account, or undefined when the session cannot be read.
    */
-  const readTurns = async (id) => {
-    let lease
+  const readTurns = async (id: SessionId) => {
+    let lease: SessionObservation | undefined
     try {
       lease = await ctx.sessionQuery.observeSession(id)
       const events = Array.isArray(lease?.events) ? lease.events : []
@@ -113,7 +126,7 @@ export function installWaitTool(ctx) {
       let lastTurnEnd = -1
       let lastTurnStart = -1
       let lastCanceled = -1
-      let reason
+      let reason: TurnEndReason | undefined
       for (let index = 0; index < own.length; index += 1) {
         const event = own[index]
         const seq = typeof event?.seq === 'number' ? event.seq : index
@@ -162,7 +175,7 @@ export function installWaitTool(ctx) {
    * live child stays `unconfirmed` rather than claiming success.
    * @returns {Promise<{kind:'running'|'pending-input'|'new-activation'|'awaiting-end'|'observation-changed'|'unconfirmed'|'ended-earlier'|'settled', info?, reason?}>}
    */
-  const evaluate = async (id) => {
+  const evaluate = async (id: SessionId): Promise<Evaluation> => {
     if (statusOf(id) === 'running') return { kind: 'running' }
     const end = settled.get(id)
     const start = started.get(id)
@@ -191,7 +204,7 @@ export function installWaitTool(ctx) {
     return { kind: 'awaiting-end' }
   }
 
-  const tool = {
+  const tool: ToolDefinition = {
     name: 'wait_subagent',
     description: 'Wait for direct subagents (from subagent or subagent_fork) to finish their current turn. Pass every id in subagent_id; all are awaited together and each gets one done line, while its closing message arrives as the settlement notice right after. Use it when your next step needs the results, instead of messaging the child to check on it. Not for bash jobs (use job_output).',
     parameters: {
@@ -212,10 +225,10 @@ export function installWaitTool(ctx) {
     },
     output: {
       schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
+      render: (_args, value) => [{ type: 'text', text: value as string }],
     },
     isConcurrencySafe: () => true,
-    async execute(args, exec) {
+    async execute(args: WaitArguments, exec: ToolRunContext) {
       // Dedupe preserving input order; the schema already enforces a
       // non-empty array, the guard below only covers malformed direct calls.
       const refs = [...new Set(Array.isArray(args.subagent_id) ? args.subagent_id : [])]
@@ -232,11 +245,11 @@ export function installWaitTool(ctx) {
         entries = (await ctx.subagents.listDescendants(parent.id, exec.signal))
           .filter((entry) => entry.depth === 1)
       } catch (error) {
-        return 'subagent listing failed: ' + (error && error.message ? error.message : String(error))
+        return 'subagent listing failed: ' + (error && (error as Error).message ? (error as Error).message : String(error))
       }
       const known = new Set(entries.map((entry) => entry.id))
-      const resolved = []
-      const unknown = []
+      const resolved: { ref: string; id: SessionId }[] = []
+      const unknown: string[] = []
       for (const ref of refs) {
         let id
         try {
@@ -258,12 +271,12 @@ export function installWaitTool(ctx) {
       }
       const ids = resolved.map((entry) => entry.id)
       const labels = new Map(resolved.map((entry) => [entry.id, entry.ref]))
-      const displayOf = (id) => labels.get(id) ?? id
+      const displayOf = (id: SessionId) => labels.get(id) ?? id
 
       const startedAt = Date.now()
       const capMs = typeof args.timeout_ms === 'number' && args.timeout_ms > 0 ? Math.max(args.timeout_ms, MIN_TIMEOUT_MS) : undefined
 
-      const lineOf = (id, outcome) => {
+      const lineOf = (id: SessionId, outcome: Outcome) => {
         const display = displayOf(id)
         if (outcome.kind === 'aborted') return `wait for subagent ${display} was aborted by user interruption; the child may still be running.`
         if (outcome.kind === 'timedOut') return `timed out waiting for subagent ${display}; it is still running. You will be notified when it finishes — you can wait_subagent it again or continue with other work.`
@@ -287,12 +300,12 @@ export function installWaitTool(ctx) {
        * timeout, on abort, and on the poller; nothing is settled from a
        * childId-only cache.
        */
-      const waitOne = (id) => new Promise((resolve) => {
+      const waitOne = (id: SessionId) => new Promise<Outcome>((resolve) => {
         let done = false
-        let timer
-        let poller
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let poller: ReturnType<typeof setInterval> | undefined
         let checking = false
-        const finish = (outcome) => {
+        const finish: Waiter = (outcome) => {
           if (done) return
           done = true
           if (poller !== undefined) clearInterval(poller)
@@ -316,7 +329,7 @@ export function installWaitTool(ctx) {
             // A child that truly ended (no live agent) with no queued input may
             // return immediately; this is not a stale-turn success because the
             // durable log proves its last turn was consumed.
-            if (outcome.kind === 'ended-earlier') { finish({ kind: 'endedEarlier', reason: outcome.reason }); return }
+            if (outcome.kind === 'ended-earlier') { finish({ kind: 'endedEarlier', reason: outcome.reason as TurnEndReason | undefined }); return }
             if (Date.now() - startedAt >= START_GRACE_MS
               && (outcome.kind === 'awaiting-end' || outcome.kind === 'pending-input'
                 || outcome.kind === 'new-activation' || outcome.kind === 'unconfirmed')) {
@@ -370,7 +383,7 @@ export function installWaitTool(ctx) {
   }
 }
 
-export function mountWaitSubagent(ctx, config) {
+export function mountWaitSubagent(ctx: Context, config: unknown) {
   ctx.inject(inject, (runtime) => {
     const dispose = installWaitTool(runtime, config)
     if (typeof runtime.effect === 'function') runtime.effect(() => dispose, 'better-subagent: wait_subagent tool')

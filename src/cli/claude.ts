@@ -24,6 +24,8 @@
  */
 
 import { normalizeUsage, requireEnum, requireEffort, requireId, requirePrompt, requireText, sanitizeError } from './jsonl.js'
+import type { TokenUsage } from '@deepseek-ai/dsh-llm'
+import type { CliCommandSpec, CliParser } from './types.js'
 
 /** `claude --permission-mode` 的实测取值（`claude --help`）。 */
 const PERMISSION_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan']
@@ -42,7 +44,7 @@ const PERMISSION_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'manual', 
  * @param {string} spec.prompt - 正文，经 stdin 送入。
  * @returns {{argv: string[], input: string}}
  */
-export function buildCommand({ executable = 'claude', model, effort, permissionMode, remoteId, prompt } = {}) {
+export function buildCommand({ executable = 'claude', model, effort, permissionMode, remoteId, prompt }: CliCommandSpec = {}) {
   const argv = [requireText(executable, 'executable'), '--print', '--output-format', 'stream-json', '--verbose']
   if (model !== undefined) argv.push('--model', requireText(model, 'model'))
   if (effort !== undefined) argv.push('--effort', requireEffort(effort))
@@ -59,15 +61,15 @@ export function buildCommand({ executable = 'claude', model, effort, permissionM
  *
  * @returns {{push: (event: unknown) => ({remoteId?: string, text?: string, usage?: object, completed?: boolean, error?: string}|undefined), finish: () => {text: string, remoteId?: string, usage?: object}}}
  */
-export function createParser() {
-  let remoteId
+export function createParser(): CliParser {
+  let remoteId: string | undefined
   let text = ''
-  let usage
+  let usage: TokenUsage | undefined
   let completed = false
-  let failure
+  let failure: string | undefined
 
   /** 失败时优先用 provider 给的错误正文，否则退化成 subtype/api_error_status。 */
-  function describeResultFailure(event) {
+  function describeResultFailure(event: Record<string, unknown>): string {
     const label = typeof event.subtype === 'string' && event.subtype !== '' ? event.subtype : 'error'
     const detail = typeof event.result === 'string' && event.result !== '' ? event.result
       : Array.isArray(event.errors) ? event.errors.filter((item) => typeof item === 'string').slice(0, 3).join('; ') : ''
@@ -83,7 +85,8 @@ export function createParser() {
      *   本次事件产生的动作；无动作返回 undefined。
      *   `error` 是**信息性**的：只有 `finish()` 抛错才代表这一轮失败。
      */
-    push(event) {
+    push(value: unknown) {
+      const event = value as Record<string, unknown> | null
       if (event === null || typeof event !== 'object') return undefined
       switch (event.type) {
         case 'system': {
@@ -96,10 +99,10 @@ export function createParser() {
         case 'assistant': {
           // 子代理（Task 工具）的消息带 parent_tool_use_id，不能混进主答复。
           if (typeof event.parent_tool_use_id === 'string' && event.parent_tool_use_id !== '') return undefined
-          const message = event.message
+          const message = event.message as Record<string, unknown> | null
           if (message === null || typeof message !== 'object' || !Array.isArray(message.content)) return undefined
-          const chunk = message.content
-            .filter((block) => block !== null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string')
+          const chunk = (message.content as unknown[])
+            .filter((block): block is { type: 'text'; text: string } => block !== null && typeof block === 'object' && (block as Record<string, unknown>).type === 'text' && typeof (block as Record<string, unknown>).text === 'string')
             .map((block) => block.text)
             .join('')
           if (chunk === '') return undefined
@@ -153,9 +156,10 @@ export function createParser() {
  * `cache_creation_input_tokens`），与 DSH 约定一致，无需扣减；
  * `output_tokens_details.thinking_tokens` 映射为 reasoning。
  */
-function mapClaudeUsage(raw) {
+function mapClaudeUsage(value: unknown): TokenUsage | undefined {
+  const raw = value as Record<string, unknown> | null
   if (raw === null || typeof raw !== 'object') return undefined
-  const details = raw.output_tokens_details
+  const details = raw.output_tokens_details as Record<string, unknown> | null
   return normalizeUsage({
     inputTokens: raw.input_tokens,
     outputTokens: raw.output_tokens,

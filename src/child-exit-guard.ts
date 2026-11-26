@@ -14,14 +14,21 @@
  * prompt contract as well (see `src/prompt.js`).
  */
 
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type { SubagentDescendantListEntry } from '@deepseek-ai/dsh-subagent'
+
 import { currentConfig } from './config.js'
 
 export const name = 'better-subagent-child-exit-guard'
 
 export const inject = ['subagents', 'agents']
 
+type GuardChild = { id: string; label?: string; meta?: { label?: string } }
+
 /** Render one running-child line. */
-function lineOf(child) {
+function lineOf(child: GuardChild) {
   // 0.1.1-rc.2 entries are meta:{mode,label}; 0.1.2+ promote them to top level.
   const label = child.label ?? child.meta?.label
   return `  - subagent ${child.id}${label === undefined || label === '' ? '' : ` (${label})`}`
@@ -32,7 +39,7 @@ function lineOf(child) {
  * @param children - running direct-child listChildren entries.
  * @returns one user-role plugin notice message.
  */
-export function buildChildGuardMessage(children) {
+export function buildChildGuardMessage(children: readonly GuardChild[]): UserMessage {
   const text = [
     'Direct subagent work is still running, so the turn cannot end yet:',
     ...children.map(lineOf),
@@ -50,7 +57,7 @@ export function buildChildGuardMessage(children) {
       form: 'notice',
       summary: `运行中的子代理阻止回合结束（${children.length}）`,
     },
-    id: crypto.randomUUID(),
+    id: crypto.randomUUID() as UserMessage['id'],
   }
 }
 
@@ -60,8 +67,8 @@ export function buildChildGuardMessage(children) {
  * @param agent - the Agent whose turn is stopping.
  * @returns running direct-child entries; query failures propagate to the caller.
  */
-export async function collectRunningChildren(ctx, agent) {
-  const running = []
+export async function collectRunningChildren(ctx: Context, agent: Agent) {
+  const running: SubagentDescendantListEntry[] = []
   // rc.2 removed listChildren; depth-one descendants are this Agent's direct
   // children in the same stable catalog order.
   for (const entry of (await ctx.subagents.listDescendants(agent.id)).filter((candidate) => candidate.depth === 1)) {
@@ -71,7 +78,7 @@ export async function collectRunningChildren(ctx, agent) {
 }
 
 /** Install the turn-stopping listener on a context that already has the services. */
-export function installChildExitGuard(ctx, config) {
+export function installChildExitGuard(ctx: Context, config: unknown) {
   return ctx.on('agent/turn-stopping', async (payload) => {
     const agent = payload?.agent
     if (agent === undefined || payload?.signal?.aborted) return
@@ -88,7 +95,7 @@ export function installChildExitGuard(ctx, config) {
   })
 }
 
-export function mountChildExitGuard(ctx, config) {
+export function mountChildExitGuard(ctx: Context, config: unknown) {
   ctx.inject(inject, (runtime) => {
     const dispose = installChildExitGuard(runtime, config)
     if (typeof runtime.effect === 'function') runtime.effect(() => dispose, 'better-subagent: child exit guard')

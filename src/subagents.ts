@@ -10,6 +10,16 @@
  * catalog text it can render from live configuration.
  */
 
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { LlmAdapter, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SubagentActivation } from '@deepseek-ai/dsh-subagent'
+import type { ToolDispatchExecution, ToolExecution, ToolExecutionSuccess } from '@deepseek-ai/dsh-tools'
+import type {} from '@deepseek-ai/dsh-subprocess'
+import type {} from '@deepseek-ai/dsh-working-directory'
+import type { CliSessions } from './cli-sessions.js'
+
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, isAbsolute, resolve } from 'node:path'
@@ -18,10 +28,14 @@ import { CLI_DISPLAY_NAMES, CLI_ROUTES, createCliAdapter, enabledIn, selectCli }
 import { openCliSessions } from './cli-sessions.js'
 import { CLI_MIN_LABELS, assertCliVersion, probeCliVersion } from './cli/version.js'
 
-const CLI_NAMES = Object.keys(CLI_ROUTES)
-const cliName = (provider) => CLI_NAMES.includes(provider) ? provider : undefined
-const internalRoute = (provider) => Object.values(CLI_ROUTES).includes(provider)
-const success = (value) => ({ isError: false, value, content: [] })
+type CliName = keyof typeof CLI_ROUTES
+type CliArguments = { provider?: unknown; model?: unknown; reasoning_effort?: unknown; cwd?: unknown; prompt?: unknown; description?: unknown; run_in_background?: unknown; agent_preset?: unknown }
+type Unpublished = { parent?: Agent; id: SessionId; name: string; activation: SubagentActivation; cleanup?: Promise<void> }
+
+const CLI_NAMES = Object.keys(CLI_ROUTES) as CliName[]
+const cliName = (provider: unknown): CliName | undefined => CLI_NAMES.includes(provider as CliName) ? provider as CliName : undefined
+const internalRoute = (provider: unknown) => Object.values(CLI_ROUTES).includes(provider as (typeof CLI_ROUTES)[CliName])
+const success = (value: ToolExecutionSuccess['value']): ToolExecutionSuccess => ({ isError: false, value, content: [] })
 
 /**
  * Read the optional version-probe seam without requiring an inject declaration.
@@ -30,7 +44,7 @@ const success = (value) => ({ isError: false, value, content: [] })
  * @param ctx - runtime context.
  * @returns a `(executable, options) => Promise<string>` probe.
  */
-function versionProbeOf(ctx) {
+function versionProbeOf(ctx: Context) {
   try {
     const probe = ctx.get?.('cliVersionProbe')
     if (typeof probe === 'function') return probe
@@ -41,7 +55,7 @@ function versionProbeOf(ctx) {
   return probeCliVersion
 }
 
-export function cliCatalog(config, request = {}) {
+export function cliCatalog(config: unknown, request: Pick<CliArguments, 'provider' | 'model'> = {}) {
   const providers = CLI_NAMES.filter((cli) => normalizeConfig(config).subagents[cli].enabled)
   if (request.provider === undefined) return providers.map((cli) => `${cli} — ${CLI_DISPLAY_NAMES[cli]} CLI (background continuable subagents)`).join('\n')
   const cli = cliName(request.provider)
@@ -69,7 +83,7 @@ export function cliCatalog(config, request = {}) {
  * @param {AbortSignal} signal - cancellation for the directory inspection.
  * @returns {Promise<string>} absolute child directory.
  */
-async function childCwd(ctx, parent, requested, signal) {
+async function childCwd(ctx: Context, parent: Agent, requested: unknown, signal: AbortSignal) {
   if (requested !== undefined && typeof requested !== 'string') throw new Error('cwd must be a string')
   signal.throwIfAborted()
   if (requested !== undefined && isAbsolute(requested)) return requested
@@ -79,7 +93,7 @@ async function childCwd(ctx, parent, requested, signal) {
   return requested === undefined ? current : resolve(current, requested)
 }
 
-export async function startCliSubagent(ctx, config, sessions, args, exec) {
+export async function startCliSubagent(ctx: Context, config: unknown, sessions: CliSessions, args: CliArguments, exec: Pick<ToolDispatchExecution, 'agent' | 'signal'>) {
   const cli = cliName(args.provider)
   if (!cli) throw new Error('Unknown Better Subagent CLI provider')
   const parent = exec.agent
@@ -88,7 +102,7 @@ export async function startCliSubagent(ctx, config, sessions, args, exec) {
   if (args.run_in_background !== undefined) throw new Error('run_in_background was removed for CLI subagents; they always run in the background and are continued with send_message')
   if (args.agent_preset !== undefined) throw new Error('agent_preset is not supported for CLI subagents yet')
   if (typeof args.prompt !== 'string' || typeof args.description !== 'string') throw new Error('subagent requires a prompt and description')
-  const selected = selectCli(config, cli, args.model, args.reasoning_effort)
+  const selected = selectCli(config, cli, args.model as string | undefined, args.reasoning_effort as string | undefined)
   const cwd = await childCwd(ctx, parent, args.cwd, exec.signal)
   let executable
   try {
@@ -111,9 +125,9 @@ export async function startCliSubagent(ctx, config, sessions, args, exec) {
   }
   exec.signal.throwIfAborted()
   assertCliVersion(cli, versionOutput, executable)
-  const id = randomUUID()
+  const id = randomUUID() as SessionId
   const record = {
-    version: 1, id, parentId: parent.id, cli, cwd,
+    version: 1 as const, id, parentId: parent.id, cli, cwd,
     executable, profile: cli === 'codex' ? selected.profile : '',
     cliHome: cli === 'codex' ? process.env.CODEX_HOME ?? join(homedir(), '.codex')
       : process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
@@ -122,7 +136,7 @@ export async function startCliSubagent(ctx, config, sessions, args, exec) {
     model: selected.model, effort: selected.effort, delivered: [], started: false,
   }
   await sessions.put(record)
-  let created
+  let created: SubagentActivation | undefined
   try {
     exec.signal.throwIfAborted()
     const maxDepth = ctx.subagents.resolveMaxDepth()
@@ -130,7 +144,7 @@ export async function startCliSubagent(ctx, config, sessions, args, exec) {
       provider: 'spawn', label: args.description, childId: id, signal: exec.signal,
       delivery: 'parent',
       parent, prompt: [{ type: 'text', text: args.prompt }], cwd,
-      agentOptions: { provider: CLI_ROUTES[cli], model: selected.model, reasoningEffort: selected.effort },
+      agentOptions: { provider: CLI_ROUTES[cli], model: selected.model, reasoningEffort: selected.effort as ReasoningEffortId },
       ...(maxDepth === undefined ? {} : { maxDepth }),
     })
     exec.signal.throwIfAborted()
@@ -141,7 +155,7 @@ export async function startCliSubagent(ctx, config, sessions, args, exec) {
     // activation still needs explicit disposal for the post-admission abort race.
     if (created !== undefined) {
       try { await created.dispose() } catch (disposeError) {
-        ctx.logger?.warn?.(`Better Subagent could not dispose canceled CLI child ${id}: ${disposeError.message}`)
+        ctx.logger?.warn?.(`Better Subagent could not dispose canceled CLI child ${id}: ${(disposeError as Error).message}`)
       }
     }
     await sessions.delete(id)
@@ -150,12 +164,12 @@ export async function startCliSubagent(ctx, config, sessions, args, exec) {
 }
 
 /** Host-level interception extends existing tools without replacing registrations. */
-export function installCliRouting(ctx, config, sessions) {
-  const unpublished = new Map()
-  const cleanups = new Set()
-  const creating = new Set()
+export function installCliRouting(ctx: Context, config: unknown, sessions: CliSessions) {
+  const unpublished = new Map<ToolExecution['token'] | ToolExecution, Unpublished>()
+  const cleanups = new Set<Promise<void>>()
+  const creating = new Set<Promise<ToolExecutionSuccess>>()
   const lifetime = new AbortController()
-  const reclaim = (entry) => {
+  const reclaim = (entry: Unpublished) => {
     if (entry.cleanup) return entry.cleanup
     const task = (async () => {
       try { await entry.activation?.dispose() } finally { await sessions.delete(entry.id) }
@@ -171,11 +185,11 @@ export function installCliRouting(ctx, config, sessions) {
     const entry = unpublished.get(key)
     if (!entry) return
     unpublished.delete(key)
-    if (!result.isError && result.value?.kind === 'activation' && result.value.name === entry.name) return
+    if (!result.isError && (result.value as { kind?: unknown } | null)?.kind === 'activation' && (result.value as { name?: unknown }).name === entry.name) return
     void reclaim(entry)
   })
   ctx.tools.guard((exec) => {
-    const args = exec.arguments ?? {}
+    const args = (exec.arguments ?? {}) as CliArguments
     if (!['subagent', 'subagent_fork'].includes(exec.name)) return
     if (internalRoute(args.provider)) return 'Use provider="codex" or provider="claude" with subagent; internal CLI routes are reserved'
     const selected = cliName(args.provider)
@@ -185,7 +199,7 @@ export function installCliRouting(ctx, config, sessions) {
     }
   })
   ctx.on('tools/execute', async (exec, next) => {
-    const args = exec.arguments ?? {}
+    const args = (exec.arguments ?? {}) as CliArguments
     if (!enabledIn(config, exec.agent)) return next()
     if (!['subagent', 'list_subagent_models'].includes(exec.name)) return next()
     // Around-dispatch runs before the native lookup: do not create a CLI child
@@ -219,7 +233,7 @@ export function installCliRouting(ctx, config, sessions) {
   }
 }
 
-export function mountSubagents(ctx, config) {
+export function mountSubagents(ctx: Context, config: unknown) {
   ctx.inject(['tools', 'subagents', 'agents', 'llm', 'storage', 'subprocess', 'workingDirectory'], async (runtime) => {
     const sessions = await openCliSessions(runtime)
     const adapters = CLI_NAMES.map((cli) => createCliAdapter(runtime, config, sessions, cli))
@@ -229,7 +243,8 @@ export function mountSubagents(ctx, config) {
       await Promise.all(adapters.map((adapter) => adapter.dispose()))
       await sessions.close()
     })
-    adapters.forEach((adapter, index) => runtime.llm.registerAdapter([CLI_ROUTES[CLI_NAMES[index]]], adapter))
+    // Existing CLI adapters predate the unused imageRequestTarget host slot.
+    adapters.forEach((adapter, index) => runtime.llm.registerAdapter([CLI_ROUTES[CLI_NAMES[index]]], adapter as unknown as LlmAdapter))
     stopRouting = installCliRouting(runtime, config, sessions)
   })
 }

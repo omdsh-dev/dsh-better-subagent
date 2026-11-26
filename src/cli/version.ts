@@ -14,11 +14,14 @@
  */
 
 import { execFile } from 'node:child_process'
+import type { CliId } from './types.js'
+
+type CliVersion = readonly [number, number, number]
 
 /** Minimum supported version per CLI (the tested protocol baseline). */
 export const CLI_MIN_VERSIONS = Object.freeze({
-  codex: Object.freeze([0, 162, 1]),
-  claude: Object.freeze([2, 1, 300]),
+  codex: Object.freeze([0, 162, 1] as const),
+  claude: Object.freeze([2, 1, 300] as const),
 })
 
 /** Bound for `<cli> --version`; a hung CLI must not block child creation. */
@@ -35,15 +38,15 @@ export const CLI_MIN_LABELS = Object.freeze({
  * @param {unknown} text - `--version` stdout/stderr.
  * @returns {[number, number, number] | undefined}
  */
-export function parseCliVersion(text) {
+export function parseCliVersion(text: unknown): [number, number, number] | undefined {
   const match = /(?:^|[^\d])(\d+)\.(\d+)\.(\d+)/.exec(String(text ?? ''))
   if (match === null) return undefined
-  const parts = [Number(match[1]), Number(match[2]), Number(match[3])]
+  const parts: [number, number, number] = [Number(match[1]), Number(match[2]), Number(match[3])]
   return parts.every((part) => Number.isSafeInteger(part) && part >= 0) ? parts : undefined
 }
 
 /** Compare two parsed versions. */
-export function versionAtLeast(found, minimum) {
+export function versionAtLeast(found: CliVersion, minimum: CliVersion): boolean {
   for (let index = 0; index < 3; index += 1) {
     if (found[index] > minimum[index]) return true
     if (found[index] < minimum[index]) return false
@@ -59,7 +62,7 @@ export function versionAtLeast(found, minimum) {
  * @returns {string} the detected version (for diagnostics/tests).
  * @throws {Error} unparseable or older than the supported minimum.
  */
-export function assertCliVersion(cli, output, executable) {
+export function assertCliVersion(cli: CliId, output: unknown, executable?: string): string {
   const where = typeof executable === 'string' && executable !== '' ? ` at ${executable}` : ''
   const minimum = CLI_MIN_VERSIONS[cli]
   if (minimum === undefined) throw new Error(`Better Subagent has no version baseline for CLI "${String(cli)}"`)
@@ -79,7 +82,7 @@ export function assertCliVersion(cli, output, executable) {
  * @param {{timeoutMs?: number, signal?: AbortSignal}} [options]
  * @returns {Promise<string>} combined stdout/stderr (version parsers accept either).
  */
-export function probeCliVersion(executable, options = {}) {
+export function probeCliVersion(executable: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(executable, ['--version'], {
       timeout: options.timeoutMs ?? CLI_VERSION_TIMEOUT_MS,

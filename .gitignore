@@ -5,3 +5,6 @@ node_modules/
 *.jsonl
 *.bak
 .DS_Store
+
+# TypeScript build output
+lib/

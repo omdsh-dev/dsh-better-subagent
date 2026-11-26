@@ -7,44 +7,53 @@
 
 import { createHash } from 'node:crypto'
 import { dirname } from 'node:path'
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { GenerateOptions, LlmAdapter, RequestMessage, ReasoningEffortId, ResolvedRetryPolicy, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess'
+import type { CliSessions } from './cli-sessions.js'
+import type { CliId } from './cli/types.js'
+
 import { normalizeConfig } from './config.js'
 import * as codex from './cli/codex.js'
 import * as claude from './cli/claude.js'
 import { readJsonLines, sanitizeError } from './cli/jsonl.js'
 
+export type CliAdapter = Pick<LlmAdapter, 'providerInfo' | 'providerRetryPolicy' | 'imageRequestPricing' | 'listModels' | 'resolveModel' | 'prepareCall' | 'stream'> & { dispose(): Promise<void> }
+
 export const CLI_ROUTES = Object.freeze({ codex: 'apollo-cli-codex', claude: 'apollo-cli-claude' })
 const protocols = { codex, claude }
-const NO_RETRIES = Object.freeze({ mode: 'normal', maxRetries: 0, retryableCodes: [], initialDelayMs: 500, maxDelayMs: 500, jitterRatio: 0 })
+const NO_RETRIES: ResolvedRetryPolicy = Object.freeze({ mode: 'normal', maxRetries: 0, retryableCodes: [], initialDelayMs: 500, maxDelayMs: 500, jitterRatio: 0 })
 
 /** Provider id for model-facing labels. */
 export const CLI_DISPLAY_NAMES = Object.freeze({ codex: 'Codex', claude: 'Claude' })
 
-export function enabledIn(config, agent) {
+export function enabledIn(config: unknown, agent?: Agent): boolean {
   const scope = normalizeConfig(config).subagents
   let preset = agent?.session.header.agentPreset
   try {
     const projections = agent?.ctx?.get?.('sessionProjections')
-    if (projections) preset = projections.stateOf(agent.session, 'agentPreset') ?? preset
+    if (projections) preset = projections.stateOf(agent!.session, 'agentPreset') as string | undefined ?? preset
   } catch { /* Compositions without the optional preset registry use the header. */ }
-  return scope.global || (scope.eng && ['eng', 'eng-ptc'].includes(preset))
+  return scope.global || (scope.eng && ['eng', 'eng-ptc'].includes(preset as string))
 }
 
 /** Exact checks are repeated before every CLI turn, including cold resume. */
-export function selectCli(config, cli, model, effort) {
+export function selectCli(config: unknown, cli: CliId, model?: unknown, effort?: unknown) {
   const backend = normalizeConfig(config).subagents[cli]
   if (!backend?.enabled) throw new Error(`Better Subagent ${cli} backend is disabled; enable it in Plugins → Better Subagent`)
   const modelId = model ?? backend.defaultModel
   const selected = backend.models.find((candidate) => candidate.id === modelId)
   if (!selected) throw new Error(`Better Subagent ${cli} model "${modelId}" is not allowed; check the backend model list`)
   const selectedEffort = effort ?? selected.defaultEffort
-  if (!selectedEffort || !selected.efforts.includes(selectedEffort)) {
+  if (!selectedEffort || !selected.efforts.includes(selectedEffort as string)) {
     throw new Error(`Better Subagent ${cli} effort "${selectedEffort ?? ''}" is not allowed for model "${modelId}"`)
   }
-  return { ...backend, model: modelId, effort: selectedEffort }
+  return { ...backend, model: modelId as string, effort: selectedEffort as ReasoningEffortId }
 }
 
 /** Only new user deliveries go to a native CLI that already owns its history. */
-export function pendingMessages(messages, delivered) {
+export function pendingMessages(messages: readonly RequestMessage[], delivered: readonly unknown[]): { id: string; text: string }[] {
   const seen = new Set(delivered)
   const pending = []
   for (const message of messages) {
@@ -63,14 +72,14 @@ export function pendingMessages(messages, delivered) {
 }
 
 /** One adapter instance owns only one CLI; DSH owns the containing Agent loop. */
-export function createCliAdapter(ctx, config, sessions, cli) {
+export function createCliAdapter(ctx: Context, config: unknown, sessions: CliSessions, cli: CliId): CliAdapter {
   const route = CLI_ROUTES[cli]
-  const active = new Set()
-  const running = new Set()
-  const settling = new Set()
+  const active = new Set<SubprocessHandle>()
+  const running = new Set<string | undefined>()
+  const settling = new Set<Promise<void>>()
   const lifetime = new AbortController()
   let disposed = false
-  const adapter = {
+  const adapter: CliAdapter = {
     providerInfo: () => ({ id: route, name: `Better Subagent ${CLI_DISPLAY_NAMES[cli]} CLI (subagents)` }),
     providerRetryPolicy: () => NO_RETRIES,
     imageRequestPricing: () => undefined,
@@ -85,14 +94,14 @@ export function createCliAdapter(ctx, config, sessions, cli) {
       if (selected.efforts.length === 0) throw new Error(`Better Subagent ${cli} model "${model}" has no allowed reasoning efforts; configure them in Plugins → Better Subagent`)
       return {
         provider: route, id: model, name: model, inputModalities: ['text'],
-        reasoning: { efforts: selected.efforts.map((id) => ({ id, name: id })), ...(selected.defaultEffort ? { defaultEffort: selected.defaultEffort } : {}) },
+        reasoning: { efforts: selected.efforts.map((id) => ({ id: id as ReasoningEffortId, name: id })), ...(selected.defaultEffort ? { defaultEffort: selected.defaultEffort as ReasoningEffortId } : {}) },
       }
     },
     async prepareCall(provider, model, signal) {
       signal?.throwIfAborted()
       return { model: await adapter.resolveModel(provider, model), stream: (options) => adapter.stream(options) }
     },
-    async *stream(options) {
+    async *stream(options: GenerateOptions): AsyncGenerator<StreamChunk> {
       if (disposed) throw new Error('Better Subagent CLI adapter has been unloaded')
       const id = options.sessionId
       const agent = id === undefined ? undefined : ctx.agents.get(id)
@@ -112,13 +121,13 @@ export function createCliAdapter(ctx, config, sessions, cli) {
       const signal = AbortSignal.any([lifetime.signal, ...options.signal ? [options.signal] : []])
       signal.throwIfAborted()
       running.add(id)
-      let settled
-      const completion = new Promise((resolve) => { settled = resolve })
+      let settled!: () => void
+      const completion = new Promise<void>((resolve) => { settled = resolve })
       settling.add(completion)
       const prior = structuredClone(state)
       let stateWritten = false
-      let handle
-      let done
+      let handle: SubprocessHandle | undefined
+      let done: Promise<{ outcome: SubprocessOutcome; error?: never } | { error: NodeJS.ErrnoException; outcome?: never }> | undefined
       try {
         const prompt = [
           ...pending.map((message) => message.text),
@@ -134,9 +143,9 @@ export function createCliAdapter(ctx, config, sessions, cli) {
         signal.throwIfAborted()
         const subprocess = agent.ctx.get('subprocess')
         if (!subprocess) throw new Error('Better Subagent CLI subagents require the managed subprocess service')
-        const env = state.cliHome ? { [cli === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR']: state.cliHome } : undefined
+        const env: Record<string, string | undefined> | undefined = state.cliHome ? { [cli === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR']: state.cliHome } : undefined
         if (cli === 'claude' && state.claudeDefaultHome && env) {
-          env[process.platform === 'win32' ? 'USERPROFILE' : 'HOME'] = dirname(state.cliHome)
+          env[process.platform === 'win32' ? 'USERPROFILE' : 'HOME'] = dirname(state.cliHome!)
           env.CLAUDE_CONFIG_DIR = undefined // Managed subprocess tombstone preserves native default/keychain lookup.
         }
         handle = subprocess.spawn({

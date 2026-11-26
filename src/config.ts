@@ -33,6 +33,44 @@
  */
 
 import z from '@deepseek-ai/schemastery'
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-config-editor'
+
+export interface ModelConfig {
+  id: string
+  efforts: string[]
+  defaultEffort: string
+}
+
+export interface BackendConfig {
+  enabled: boolean
+  executable: string
+  profile?: string
+  permissionMode: string
+  defaultModel: string
+  models: ModelConfig[]
+}
+
+export interface TierConfig {
+  provider: string
+  model: string
+  reasoningEffort: string
+}
+
+export interface BetterSubagentConfig {
+  childExitGuard: boolean
+  delegation: { prompt: boolean }
+  tiers: { fast: TierConfig; quality: TierConfig }
+  subagents: { eng: boolean; global: boolean; codex: BackendConfig; claude: BackendConfig }
+  trustedHosts: string[]
+}
+
+interface BackendSpec {
+  executable: string
+  permissionMode: string
+  permissionModes: readonly string[]
+  profile: boolean
+}
 
 /** 本包在 profile roster 里的行 id；也是 dsh-settings 的命名空间（= Loader entry id）。 */
 export const ENTRY_ID = 'dsh-better-subagent'
@@ -96,8 +134,8 @@ const ModelSchema = z.object({
 })
 
 /** 一个 CLI 后端的可编辑配置（整体 volatile：任一字段变更都不重挂）。 */
-function backendSchema(spec) {
-  const dict = {
+function backendSchema(spec: BackendSpec) {
+  const dict: Record<string, z> = {
     enabled: z.boolean().default(false),
     executable: z.string().default(spec.executable),
   }
@@ -116,7 +154,7 @@ const TierSchema = z.object({
 }).volatile()
 
 /** 分档名（提示词按此顺序渲染）。 */
-export const TIER_NAMES = Object.freeze(['fast', 'quality'])
+export const TIER_NAMES = Object.freeze(['fast', 'quality'] as const)
 
 /**
  * 本插件行的正式配置 schema。
@@ -153,17 +191,17 @@ export const Config = z.object({
 // ── 规整（volatile 引用 → 普通 JSON）────────────────────────────────────────
 
 /** 是否是 cosmokit volatile 引用（跨库副本按共享符号识别）。 */
-function isVolatileRef(value) {
+function isVolatileRef(value: unknown): value is { get(): unknown } {
   return typeof value === 'object' && value !== null
-    && typeof value.get === 'function' && VOLATILE_WRITE in value
+    && typeof (value as { get?: unknown }).get === 'function' && VOLATILE_WRITE in value
 }
 
 /** 递归展开 volatile 引用，返回与输入同形的普通 JSON 数据。 */
-function plain(value) {
+function plain(value: unknown): unknown {
   if (isVolatileRef(value)) return plain(value.get())
   if (Array.isArray(value)) return value.map((entry) => plain(entry))
   if (value !== null && typeof value === 'object') {
-    const result = {}
+    const result: Record<string, unknown> = {}
     for (const [key, entry] of Object.entries(value)) result[key] = plain(entry)
     return result
   }
@@ -171,31 +209,31 @@ function plain(value) {
 }
 
 /** 是否是普通数据对象（数组、null、类实例都不算）。 */
-function isRecord(value) {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** 布尔读取：非布尔一律回退默认。 */
-function booleanOf(value, fallback) {
+function booleanOf(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
 }
 
 /** 字符串读取：非字符串或空串回退默认；否则去首尾空白。 */
-function stringOf(value, fallback) {
+function stringOf(value: unknown, fallback: string): string {
   if (typeof value !== 'string') return fallback
   const trimmed = value.trim()
   return trimmed === '' ? fallback : trimmed
 }
 
 /** 枚举读取：不在允许集合内一律回退默认。 */
-function oneOf(value, allowed, fallback) {
+function oneOf(value: unknown, allowed: readonly string[], fallback: string): string {
   return typeof value === 'string' && allowed.includes(value) ? value : fallback
 }
 
 /** 字符串数组读取：丢弃非字符串/空串，去重并保持顺序。 */
-function stringList(value) {
+function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return []
-  const result = []
+  const result: string[] = []
   for (const entry of value) {
     if (typeof entry !== 'string') continue
     const trimmed = entry.trim()
@@ -209,7 +247,7 @@ function stringList(value) {
  * 模型列表读取：丢弃无 id 的条目与重复 id，`efforts` 去重，`defaultEffort`
  * 只在属于该模型 `efforts` 时保留（否则清空——消费方会拒绝不一致的组合）。
  */
-function modelsOf(value) {
+function modelsOf(value: unknown): ModelConfig[] {
   if (!Array.isArray(value)) return []
   const result = []
   const seen = new Set()
@@ -230,12 +268,12 @@ function modelsOf(value) {
 }
 
 /** 一个后端对象读取。 */
-function backendOf(value, spec) {
+function backendOf(value: unknown, spec: BackendSpec): BackendConfig {
   const source = isRecord(value) ? value : {}
   const backend = {
     enabled: booleanOf(source.enabled, false),
     executable: stringOf(source.executable, spec.executable),
-  }
+  } as BackendConfig
   if (spec.profile) backend.profile = stringOf(source.profile, '')
   backend.permissionMode = oneOf(source.permissionMode, spec.permissionModes, spec.permissionMode)
   backend.defaultModel = stringOf(source.defaultModel, '')
@@ -244,7 +282,7 @@ function backendOf(value, spec) {
 }
 
 /** 一档读取：provider 或 model 任一为空则整档清空（= 沿用父会话路由）。 */
-function tierOf(value) {
+function tierOf(value: unknown): TierConfig {
   const source = isRecord(value) ? value : {}
   const provider = stringOf(source.provider, '')
   const model = stringOf(source.model, '')
@@ -260,7 +298,7 @@ function tierOf(value) {
  * @param config - 任意配置值。
  * @returns `{ childExitGuard, delegation: { prompt }, tiers: { fast, quality }, subagents: { eng, global, codex, claude }, trustedHosts }`。
  */
-export function normalizeConfig(config) {
+export function normalizeConfig(config?: unknown): BetterSubagentConfig {
   const projected = plain(config)
   const source = isRecord(projected) ? projected : {}
   const subagents = isRecord(source.subagents) ? source.subagents : {}
@@ -292,7 +330,7 @@ export const DEFAULT_CONFIG = normalizeConfig(undefined)
  * @param name - 服务名。
  * @returns 服务实例，或 undefined。
  */
-function readService(ctx, name) {
+function readService<K extends keyof Context & string>(ctx: Context | undefined | null, name: K): Context[K] | undefined {
   if (ctx === undefined || ctx === null) return undefined
   try {
     if (typeof ctx.get === 'function') {
@@ -315,7 +353,7 @@ function readService(ctx, name) {
  * @param ctx - 任意插件上下文。
  * @returns Loader entry，或 undefined。
  */
-export function liveConfigEntry(ctx) {
+export function liveConfigEntry(ctx?: Context | null): { options: { id: string; name: string }; fiber?: { config?: unknown } } | undefined {
   const editor = readService(ctx, 'configEditor')
   if (editor === undefined || typeof editor.entries !== 'function') return undefined
   try {
@@ -339,7 +377,7 @@ export function liveConfigEntry(ctx) {
  * @param fallback - 找不到活 entry 时使用的配置来源（通常是 apply 收到的 config）。
  * @returns 规整后的普通 JSON 配置。
  */
-export function currentConfig(ctx, fallback) {
+export function currentConfig(ctx?: Context | null, fallback?: unknown): BetterSubagentConfig {
   const entry = liveConfigEntry(ctx)
   if (entry === undefined) return normalizeConfig(fallback)
   return normalizeConfig(entry.fiber?.config ?? fallback)

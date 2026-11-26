@@ -15,6 +15,7 @@
  */
 
 import { StringDecoder } from 'node:string_decoder'
+import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 
 /** 单行上限 1 MiB：CLI 事件远小于此，超过即视为协议被破坏。 */
 export const DEFAULT_MAX_LINE_BYTES = 1048576
@@ -32,7 +33,7 @@ const SKIP = Symbol('jsonl.skip')
  * @param {{maxLineBytes?: number}} [options] - 单行字节上限。
  * @returns {AsyncGenerator<unknown>} 解析后的事件，按流序产出。
  */
-export async function* readJsonLines(readable, { maxLineBytes = DEFAULT_MAX_LINE_BYTES } = {}) {
+export async function* readJsonLines(readable: AsyncIterable<Buffer | Uint8Array | string>, { maxLineBytes = DEFAULT_MAX_LINE_BYTES }: { maxLineBytes?: number } = {}): AsyncGenerator<unknown> {
   if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0) {
     throw new TypeError(`readJsonLines: maxLineBytes 必须是正的安全整数，收到 ${maxLineBytes}`)
   }
@@ -69,7 +70,7 @@ export async function* readJsonLines(readable, { maxLineBytes = DEFAULT_MAX_LINE
 }
 
 /** 解析一行：空白行返回哨兵，非法 JSON 抛 SyntaxError（带行号）。 */
-function parseLine(line, lineNumber, maxLineBytes) {
+function parseLine(line: string, lineNumber: number, maxLineBytes: number): unknown {
   const text = line.endsWith('\r') ? line.slice(0, -1) : line
   if (text.trim() === '') return SKIP
   if (Buffer.byteLength(text) > maxLineBytes) {
@@ -78,7 +79,7 @@ function parseLine(line, lineNumber, maxLineBytes) {
   try {
     return JSON.parse(text)
   } catch (error) {
-    throw new SyntaxError(`readJsonLines: 第 ${lineNumber} 行不是合法 JSON：${error.message}`)
+    throw new SyntaxError(`readJsonLines: 第 ${lineNumber} 行不是合法 JSON：${(error as Error).message}`)
   }
 }
 
@@ -93,13 +94,13 @@ function parseLine(line, lineNumber, maxLineBytes) {
  * @param {{inputTokens?: unknown, outputTokens?: unknown, cacheReadTokens?: unknown, cacheWriteTokens?: unknown, reasoningTokens?: unknown}} raw
  * @returns {{inputTokens: number, outputTokens: number, totalTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number, reasoningTokens?: number}}
  */
-export function normalizeUsage({ inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens } = {}) {
+export function normalizeUsage({ inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens }: { inputTokens?: unknown; outputTokens?: unknown; cacheReadTokens?: unknown; cacheWriteTokens?: unknown; reasoningTokens?: unknown } = {}): TokenUsage {
   const input = count(inputTokens)
   const output = count(outputTokens)
   const cacheRead = count(cacheReadTokens)
   const cacheWrite = count(cacheWriteTokens)
   const reasoning = count(reasoningTokens)
-  const usage = {
+  const usage: TokenUsage = {
     inputTokens: input,
     outputTokens: output,
     totalTokens: input + output + cacheRead + cacheWrite,
@@ -111,12 +112,12 @@ export function normalizeUsage({ inputTokens, outputTokens, cacheReadTokens, cac
 }
 
 /** 取一个非负有限数；其余（undefined/NaN/负数/字符串）一律折成 0。 */
-function count(value) {
+function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
 }
 
 /** 去敏 + 有界的错误文本：抹掉凭据形状、压掉控制字符/换行、按字符数截断。 */
-const REDACTIONS = [
+const REDACTIONS: [RegExp, string][] = [
   // Bearer / Authorization 头
   [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]'],
   // 显式键名后的取值（api_key=、token:、password 等）
@@ -135,7 +136,7 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]+/g
  * @param {unknown} value - 原始错误（字符串、Error、事件字段……）。
  * @returns {string} 去敏且不超过 {@link MAX_ERROR_CHARS} 的单行文本。
  */
-export function sanitizeError(value) {
+export function sanitizeError(value: unknown): string {
   let text = typeof value === 'string' ? value : value instanceof Error ? value.message : safeStringify(value)
   for (const [pattern, replacement] of REDACTIONS) text = text.replace(pattern, replacement)
   text = text.replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim()
@@ -147,7 +148,7 @@ export function sanitizeError(value) {
  * 兜底序列化：循环引用、undefined、函数等都不该让解析器崩掉，
  * 也绝不能让 `undefined` 变成字面量字符串 "undefined" 混进错误文本。
  */
-function safeStringify(value) {
+function safeStringify(value: unknown): string {
   if (value === undefined || value === null) return ''
   try {
     const text = JSON.stringify(value)
@@ -158,7 +159,7 @@ function safeStringify(value) {
 }
 
 /** 校验「非空字符串且不含控制字符」的 argv 取值。argv 不经 shell 解释，只需拦空值与换行。 */
-export function requireText(value, name) {
+export function requireText(value: unknown, name: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new TypeError(`${name} 必须是非空字符串，收到 ${describe(value)}`)
   }
@@ -172,7 +173,7 @@ export function requireText(value, name) {
  * 校验**位置参数**取值（如 `codex exec resume <id>`）。
  * 额外拒绝前导 `-`：否则一个形如 `--json` 的 id 会被 CLI 当成选项解析。
  */
-export function requireId(value, name) {
+export function requireId(value: unknown, name: string): string {
   const text = requireText(value, name)
   if (text.startsWith('-')) {
     throw new TypeError(`${name} 不能以 "-" 开头（会被 CLI 当作选项），收到 ${JSON.stringify(text)}`)
@@ -186,7 +187,7 @@ export function requireId(value, name) {
  * 实测取值 codex = minimal/low/medium/high，claude = low/medium/high/xhigh/max；
  * 不做枚举硬编码，以免上游加档位就炸。
  */
-export function requireEffort(value, name = 'effort') {
+export function requireEffort(value: unknown, name = 'effort'): string {
   if (typeof value !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(value)) {
     throw new TypeError(`${name} 必须是形如 low/medium/high/xhigh/max 的档位标识，收到 ${describe(value)}`)
   }
@@ -194,15 +195,15 @@ export function requireEffort(value, name = 'effort') {
 }
 
 /** 校验枚举型取值，把「CLI 后期才报错」提前成构造期的清晰 TypeError。 */
-export function requireEnum(value, allowed, name) {
-  if (!allowed.includes(value)) {
+export function requireEnum<T>(value: unknown, allowed: readonly T[], name: string): T {
+  if (!allowed.includes(value as T)) {
     throw new TypeError(`${name} 必须是 ${allowed.join(' / ')} 之一，收到 ${describe(value)}`)
   }
-  return value
+  return value as T
 }
 
 /** 校验 stdin 正文：只要求是字符串，内容原样透传（可以含换行，空串也合法）。 */
-export function requirePrompt(value) {
+export function requirePrompt(value: unknown): string {
   if (typeof value !== 'string') {
     throw new TypeError(`prompt 必须是字符串（作为子进程 stdin 正文），收到 ${describe(value)}`)
   }
@@ -210,7 +211,7 @@ export function requirePrompt(value) {
 }
 
 /** 给报错用的短描述，避免把整个超长 prompt 打进错误里。 */
-function describe(value) {
+function describe(value: unknown): string {
   if (typeof value === 'string') return JSON.stringify(value.length > 60 ? `${value.slice(0, 60)}…` : value)
   return String(value)
 }

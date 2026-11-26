@@ -15,6 +15,13 @@
  * with the session header/projection as fallback.
  */
 
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { BetterSubagentConfig, TierConfig } from './config.js'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
+import type {} from '@deepseek-ai/dsh-session-projection'
+import type {} from '@deepseek-ai/dsh-system-prompt'
+
 import { currentConfig } from './config.js'
 import { enabledIn } from './cli-adapter.js'
 import { cliCatalog } from './subagents.js'
@@ -47,7 +54,7 @@ const CHILD_EXIT_GUARD = `## Child exit guard
 - If direct subagents are still running when the turn would end, the system injects a reminder and the turn continues. Wait for them with wait_subagent, then finish; interrupting the turn (Esc) always passes through.`
 
 /** One tier as model-facing argument text; an unset tier inherits the parent route. */
-export function renderTier(tier) {
+export function renderTier(tier: TierConfig | undefined) {
   if (!tier?.provider || !tier?.model) return 'omit provider / model / reasoning_effort to inherit the parent route'
   const parts = [`provider: \`${tier.provider}\``, `model: \`${tier.model}\``]
   if (tier.reasoningEffort) parts.push(`reasoning_effort: \`${tier.reasoningEffort}\``)
@@ -61,7 +68,7 @@ export function renderTier(tier) {
  * @param options - `{ ptc }` (true for the eng-ptc preset).
  * @returns the section markdown; never empty (scope gating happens outside).
  */
-export function renderDelegation(config, options = {}) {
+export function renderDelegation(config: Pick<BetterSubagentConfig, 'tiers'>, options: { ptc?: boolean } = {}) {
   const tiers = `## Subagent model tiers
 - Fast tier (exploration, reconnaissance, mechanical analysis, batch triage): ${renderTier(config.tiers?.fast)}
 - Quality tier (complex implementation, debugging, review, design): ${renderTier(config.tiers?.quality)}
@@ -76,7 +83,7 @@ export function renderChildGuard() {
 }
 
 /** Render the CLI catalog section text; empty when no backend is enabled. */
-export function renderCliCatalog(config) {
+export function renderCliCatalog(config: unknown) {
   const catalog = cliCatalog(config)
   if (!catalog) return ''
   return [
@@ -95,15 +102,15 @@ export function renderCliCatalog(config) {
  * @param agent - live Agent.
  * @returns preset id, or undefined.
  */
-export function presetOf(ctx, agent) {
+export function presetOf(ctx: Context, agent: Agent | undefined) {
   let preset = agent?.session?.header?.agentPreset
   try {
     const projections = agent?.ctx?.get?.('sessionProjections')
-    if (projections) preset = projections.stateOf(agent.session, 'agentPreset') ?? preset
+    if (projections) preset = projections.stateOf(agent!.session, 'agentPreset') as string | undefined ?? preset
   } catch { /* Optional registry: keep the header value. */ }
   try {
     const registry = ctx.get?.('agentPresets') ?? ctx.agentPresets
-    const composed = registry?.composedPreset?.(agent.ctx)
+    const composed = registry?.composedPreset?.(agent!.ctx)
     if (typeof composed === 'string' && composed !== '') preset = composed
   } catch { /* Optional registry: keep the projection/header value. */ }
   return preset
@@ -115,10 +122,10 @@ export function presetOf(ctx, agent) {
  * @param config - row config (volatile refs allowed).
  * @returns disposer removing the creation listener.
  */
-export function installPromptSections(ctx, config) {
-  const registered = new WeakSet()
+export function installPromptSections(ctx: Context, config: unknown) {
+  const registered = new WeakSet<Agent>()
 
-  const register = (agent) => {
+  const register = (agent: Agent | null | undefined) => {
     if (agent === undefined || agent === null || registered.has(agent)) return
     registered.add(agent)
     const systemPrompt = agent.ctx?.systemPrompt
@@ -155,7 +162,7 @@ export function installPromptSections(ctx, config) {
     })
   }
 
-  const off = ctx.on('agent/created', ({ agent }) => {
+  const off = ctx.on('agent/created', ({ agent }): undefined => {
     try {
       register(agent)
     } catch (error) {
@@ -171,7 +178,7 @@ export function installPromptSections(ctx, config) {
   return off
 }
 
-export function mountPrompt(ctx, config) {
+export function mountPrompt(ctx: Context, config: unknown) {
   ctx.inject(inject, (runtime) => {
     const dispose = installPromptSections(runtime, config)
     if (typeof runtime.effect === 'function') runtime.effect(() => dispose, 'better-subagent: prompt sections')

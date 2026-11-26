@@ -15,6 +15,8 @@
  * keep both CLI backends off and the child exit guard off.
  */
 
+import type { Context } from '@deepseek-ai/cordis'
+
 import { mountChildExitGuard } from './child-exit-guard.js'
 import { mountPrompt } from './prompt.js'
 import { mountPtcExemption } from './ptc-exemption.js'
@@ -32,7 +34,7 @@ export const name = 'dsh-better-subagent'
  * @param ctx - plugin context.
  * @param config - row config (volatile references allowed).
  */
-export function apply(ctx, config) {
+export function apply(ctx: Context, config: unknown) {
   mountSettings(ctx, config)
   mountSubagents(ctx, config)
   mountWaitSubagent(ctx, config)

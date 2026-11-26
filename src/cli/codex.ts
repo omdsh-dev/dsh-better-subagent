@@ -21,6 +21,8 @@
  */
 
 import { normalizeUsage, requireEffort, requireEnum, requireId, requirePrompt, requireText, sanitizeError } from './jsonl.js'
+import type { TokenUsage } from '@deepseek-ai/dsh-llm'
+import type { CliCommandSpec, CliParser } from './types.js'
 
 /** `codex -s/--sandbox` 的实测取值（`codex --help`）。 */
 const SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access']
@@ -39,7 +41,7 @@ const SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access']
  * @param {string} spec.prompt - 正文，经 stdin 送入。
  * @returns {{argv: string[], input: string}}
  */
-export function buildCommand({ executable = 'codex', cwd, model, effort, profile, permissionMode, remoteId, prompt } = {}) {
+export function buildCommand({ executable = 'codex', cwd, model, effort, profile, permissionMode, remoteId, prompt }: CliCommandSpec = {}) {
   const argv = [requireText(executable, 'executable')]
   // —— 根选项：必须在 `exec` 之前，否则续接时 `exec resume` 会拒绝它们 ——
   if (profile !== undefined) argv.push('-p', requireText(profile, 'profile'))
@@ -62,12 +64,12 @@ export function buildCommand({ executable = 'codex', cwd, model, effort, profile
  *
  * @returns {{push: (event: unknown) => ({remoteId?: string, text?: string, usage?: object, completed?: boolean, error?: string}|undefined), finish: () => {text: string, remoteId?: string, usage?: object}}}
  */
-export function createParser() {
-  let remoteId
+export function createParser(): CliParser {
+  let remoteId: string | undefined
   let text = ''
-  let usage
+  let usage: TokenUsage | undefined
   let completed = false
-  let failure
+  let failure: string | undefined
 
   return {
     /**
@@ -77,7 +79,8 @@ export function createParser() {
      *   本次事件产生的动作；无动作返回 undefined。
      *   `error` 是**信息性**的：只有 `finish()` 抛错才代表这一轮失败。
      */
-    push(event) {
+    push(value: unknown) {
+      const event = value as Record<string, unknown> | null
       if (event === null || typeof event !== 'object') return undefined
       switch (event.type) {
         case 'thread.started': {
@@ -89,7 +92,7 @@ export function createParser() {
         }
         case 'item.completed':
         case 'item.updated': {
-          const item = event.item
+          const item = event.item as Record<string, unknown> | null
           if (item === null || typeof item !== 'object') return undefined
           if (item.type === 'agent_message') {
             if (typeof item.text !== 'string' || item.text === '') return undefined
@@ -147,7 +150,8 @@ export function createParser() {
  * `inputTokens` 不含缓存（见 dsh-llm-pi-ai），故这里做同样扣减；`totalTokens` 由
  * normalizeUsage 按 `input + output + cacheRead + cacheWrite` 还原成完整调用量。
  */
-function mapCodexUsage(raw) {
+function mapCodexUsage(value: unknown): TokenUsage | undefined {
+  const raw = value as Record<string, unknown> | null
   if (raw === null || typeof raw !== 'object') return undefined
   const cacheRead = raw.cached_input_tokens
   const cacheWrite = raw.cache_write_input_tokens

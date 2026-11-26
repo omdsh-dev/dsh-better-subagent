@@ -45,6 +45,67 @@ import { accessSync, constants, readFileSync, readdirSync, statSync } from 'node
 import { homedir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { currentConfig, normalizeConfig } from './config.js'
+import type { ModelConfig } from './config.js'
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-llm'
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Dirent } from 'node:fs'
+
+type Cli = 'codex' | 'claude'
+
+interface ProbeOptions {
+  env?: NodeJS.ProcessEnv
+  home?: string
+  cwd?: string
+}
+
+interface Capabilities {
+  executables: Record<Cli, { executable: string; path: string | null; version: string | null }>
+  codexProfiles: string[]
+}
+
+interface CapabilityDeps extends ProbeOptions {
+  resolveExecutable?: (executable: string, options: ProbeOptions) => unknown
+  probeVersion?: (path: string, options: { timeoutMs: number }) => unknown | Promise<unknown>
+  listCodexProfiles?: (options: ProbeOptions) => unknown
+  versionTimeoutMs?: number
+  ttlMs?: number
+  now?: () => number
+}
+
+interface DiscoveryDeps extends ProbeOptions {
+  readFile?: (path: string) => unknown
+  fetch?: typeof globalThis.fetch
+  resolveExecutable?: (executable: string, options: ProbeOptions) => unknown
+  runCommand?: (path: string, args: string[], options: { timeoutMs: number }) => Promise<string | undefined>
+  timeoutMs?: number
+  fallbackTimeoutMs?: number
+}
+
+interface DiscoveryResult {
+  cli: string
+  models: ModelConfig[]
+  source: string | null
+  error: { code: string; status?: number } | null
+}
+
+interface TierRoutes {
+  enabled: boolean
+  routes: { provider: string; model: string; efforts: string[]; defaultEffort: string }[]
+}
+
+interface RouteDeps extends CapabilityDeps, DiscoveryDeps {
+  read?: (config: unknown) => unknown | Promise<unknown>
+  discover?: (cli: string, config: unknown) => unknown | Promise<unknown>
+  routes?: () => unknown | Promise<unknown>
+}
+
+interface ClaudeApiConfig {
+  baseURL: string
+  authToken?: string
+  apiKey?: string
+}
 
 /** 宿主半边模块标识（用于 effect 标签与日志）。 */
 export const name = 'better-subagent-panel'
@@ -101,7 +162,7 @@ const EFFORT = /^[A-Za-z][A-Za-z0-9._-]*$/
 export const ROUTES_PATH = '/better-subagent/api/routes'
 
 /** 读一个宿主服务；不可见或抛错返回 undefined。 */
-function hostService(ctx, name) {
+function hostService<K extends keyof Context & string>(ctx: Context, name: K): Context[K] | undefined {
   try { return ctx.get?.(name) ?? undefined } catch { return undefined }
 }
 
@@ -114,18 +175,18 @@ function hostService(ctx, name) {
  * @param ctx - 插件上下文。
  * @returns `{ enabled, routes: [{ provider, model, efforts, defaultEffort }] }`。
  */
-export async function collectTierRoutes(ctx) {
-  let selection
+export async function collectTierRoutes(ctx: Context): Promise<TierRoutes> {
+  let selection: ReturnType<Context['subagentModelSelection']['current']> | undefined
   try { selection = hostService(ctx, 'subagentModelSelection')?.current() } catch { selection = undefined }
   if (!isRecord(selection) || !Array.isArray(selection.allowedModels)) return { enabled: false, routes: [] }
   const llm = hostService(ctx, 'llm')
   const routes = await Promise.all(selection.allowedModels.map(async ({ provider, model }) => {
     try {
       const reasoning = (await llm?.resolveModelInfo?.(provider, model))?.reasoning
-      const efforts = Array.isArray(reasoning?.efforts)
+      const efforts: string[] = Array.isArray(reasoning?.efforts)
         ? reasoning.efforts.map((effort) => effort?.id).filter((id) => typeof id === 'string' && id !== '')
         : []
-      const defaultEffort = efforts.includes(reasoning?.defaultEffort) ? reasoning.defaultEffort : ''
+      const defaultEffort = efforts.includes(reasoning?.defaultEffort as string) ? reasoning!.defaultEffort! : ''
       return { provider, model, efforts, defaultEffort }
     } catch {
       return { provider, model, efforts: [], defaultEffort: '' }
@@ -137,14 +198,14 @@ export async function collectTierRoutes(ctx) {
 // ── 探针：PATH 解析 / 版本 / Codex profile 名 ───────────────────────────────
 
 /** 展开 `~` 前缀（不解析其他 shell 语法）。 */
-function expandHome(value, home) {
+function expandHome(value: string, home: string): string {
   if (value === '~') return home
   if (value.startsWith('~/') || value.startsWith('~\\')) return join(home, value.slice(2))
   return value
 }
 
 /** 是否是可执行普通文件（非 win32 要求 X_OK 位）。 */
-function isExecutableFile(path) {
+function isExecutableFile(path: string): boolean {
   try {
     if (!statSync(path).isFile()) return false
     if (process.platform !== 'win32') accessSync(path, constants.X_OK)
@@ -163,7 +224,7 @@ function isExecutableFile(path) {
  * @param options - 注入点：`env`（PATH/CODEX_HOME）、`home`（`~` 展开）、`cwd`（相对路径基准）。
  * @returns 可执行文件的绝对路径，或 null。
  */
-export function resolveExecutable(executable, options = {}) {
+export function resolveExecutable(executable: unknown, options: ProbeOptions = {}): string | null {
   const env = options.env ?? process.env
   const home = options.home ?? homedir()
   if (typeof executable !== 'string') return null
@@ -187,7 +248,7 @@ export function resolveExecutable(executable, options = {}) {
 }
 
 /** 取第一行非空文本做版本号：剥掉控制字符并截断。 */
-function parseVersion(text) {
+function parseVersion(text: unknown): string | null {
   for (const raw of String(text ?? '').split('\n')) {
     const line = raw.replace(/[\u0000-\u001f\u007f]/g, '').trim()
     if (line === '') continue
@@ -205,9 +266,9 @@ function parseVersion(text) {
  * @param options - `timeoutMs` 覆盖。
  * @returns 版本行，或 null。
  */
-export function probeVersion(path, options = {}) {
+export function probeVersion(path: string, options: { timeoutMs?: number } = {}): Promise<string | null> {
   const timeoutMs = options.timeoutMs ?? VERSION_TIMEOUT_MS
-  return new Promise((resolve) => {
+  return new Promise<string | null>((resolve) => {
     execFile(path, ['--version'], {
       timeout: timeoutMs,
       killSignal: 'SIGKILL',
@@ -224,7 +285,7 @@ export function probeVersion(path, options = {}) {
 }
 
 /** 读取一个文本文件的所有行；缺失或不可读返回空数组。 */
-function readLines(path) {
+function readLines(path: string): string[] {
   try {
     return readFileSync(path, 'utf8').split('\n')
   } catch {
@@ -233,7 +294,7 @@ function readLines(path) {
 }
 
 /** 是否是合法的 Codex profile 名（拒绝 `.`/`..`，名称只会当显示文本用）。 */
-function isProfileName(value) {
+function isProfileName(value: unknown): value is string {
   return typeof value === 'string' && value !== '' && value !== '.' && value !== '..' && PROFILE_NAME.test(value)
 }
 
@@ -247,13 +308,13 @@ function isProfileName(value) {
  * @param options - 注入点：`env`、`home`。
  * @returns 排序去重后的 profile 名。
  */
-export function listCodexProfiles(options = {}) {
+export function listCodexProfiles(options: ProbeOptions = {}): string[] {
   const env = options.env ?? process.env
   const home = options.home ?? homedir()
   const configured = typeof env.CODEX_HOME === 'string' ? env.CODEX_HOME.trim() : ''
   const dir = configured === '' ? join(home, '.codex') : expandHome(configured, home)
-  const names = new Set()
-  let entries = []
+  const names = new Set<string>()
+  let entries: Dirent[] = []
   try {
     entries = readdirSync(dir, { withFileTypes: true })
   } catch {
@@ -274,7 +335,7 @@ export function listCodexProfiles(options = {}) {
 }
 
 /** 同步调用并吞掉异常。 */
-function attempt(run) {
+function attempt<T>(run: () => T): T | undefined {
   try {
     return run()
   } catch {
@@ -283,7 +344,7 @@ function attempt(run) {
 }
 
 /** 异步调用并吞掉异常（拒绝）。 */
-async function attemptAsync(run) {
+async function attemptAsync<T>(run: () => T | Promise<T>): Promise<T | undefined> {
   try {
     return await run()
   } catch {
@@ -302,7 +363,7 @@ async function attemptAsync(run) {
  *   `listCodexProfiles`、`versionTimeoutMs`。
  * @returns `{ executables, codexProfiles }`（普通 JSON）。
  */
-export async function collectCapabilities(config, deps = {}) {
+export async function collectCapabilities(config: unknown, deps: CapabilityDeps = {}): Promise<Capabilities> {
   const env = deps.env ?? process.env
   const home = deps.home ?? homedir()
   const resolve = deps.resolveExecutable ?? resolveExecutable
@@ -310,13 +371,13 @@ export async function collectCapabilities(config, deps = {}) {
   const listProfiles = deps.listCodexProfiles ?? listCodexProfiles
   const options = { env, home }
   const backends = normalizeConfig(config).subagents
-  const executables = {}
-  for (const cli of ['codex', 'claude']) {
+  const executables = {} as Capabilities['executables']
+  for (const cli of ['codex', 'claude'] as const) {
     const executable = backends[cli].executable
     const path = attempt(() => resolve(executable, options)) ?? null
     const version = path === null
       ? null
-      : await attemptAsync(() => probe(path, { timeoutMs: deps.versionTimeoutMs ?? VERSION_TIMEOUT_MS })) ?? null
+      : await attemptAsync(() => probe(path as string, { timeoutMs: deps.versionTimeoutMs ?? VERSION_TIMEOUT_MS })) ?? null
     executables[cli] = {
       executable,
       path: typeof path === 'string' && path !== '' ? path : null,
@@ -331,7 +392,7 @@ export async function collectCapabilities(config, deps = {}) {
 }
 
 /** 探针缓存的键：两个可执行文件名 + PATH/CODEX_HOME/home 的变化都要失效。 */
-function capabilityKey(config, deps) {
+function capabilityKey(config: unknown, deps: CapabilityDeps): string {
   const env = deps.env ?? process.env
   const backends = normalizeConfig(config).subagents
   return JSON.stringify([
@@ -351,12 +412,12 @@ function capabilityKey(config, deps) {
  * @param deps - 同 {@link collectCapabilities}，另加 `ttlMs`、`now`（测试注入）。
  * @returns `read(config)` → 探针数据。
  */
-export function createCapabilitiesReader(deps = {}) {
+export function createCapabilitiesReader(deps: CapabilityDeps = {}) {
   const ttlMs = deps.ttlMs ?? CAPABILITY_TTL_MS
   const now = deps.now ?? Date.now
-  let entry
-  let pending
-  return async function read(config) {
+  let entry: { key: string; at: number; value: Capabilities } | undefined
+  let pending: { key: string; promise: Promise<Capabilities> } | undefined
+  return async function read(config: unknown): Promise<Capabilities> {
     const key = capabilityKey(config, deps)
     if (entry !== undefined && entry.key === key && now() - entry.at < ttlMs) return entry.value
     if (pending !== undefined && pending.key === key) return pending.promise
@@ -376,12 +437,12 @@ export function createCapabilitiesReader(deps = {}) {
 // ── 模型自动发现 ────────────────────────────────────────────────────────────
 
 /** 普通数据对象（数组、null、类实例都不算）。 */
-function isRecord(value) {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** 规整模型 id：去空白、限长、拒绝空白/引号/控制字符。 */
-function modelIdOf(value) {
+function modelIdOf(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const id = value.trim()
   if (id === '' || id.length > MAX_MODEL_ID_CHARS || !MODEL_ID.test(id)) return null
@@ -389,7 +450,7 @@ function modelIdOf(value) {
 }
 
 /** 规整 effort 名：去空白、限长、拒绝空白/引号/控制字符。 */
-function effortOf(value) {
+function effortOf(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const effort = value.trim()
   if (effort === '' || effort.length > MAX_EFFORT_CHARS || !EFFORT.test(effort)) return null
@@ -405,21 +466,21 @@ function effortOf(value) {
  * @param text - 命令 stdout。
  * @returns 模型数组；JSON 不可解析时返回 null（调用方报 parse 错误）。
  */
-export function parseCodexCatalog(text) {
-  let parsed
+export function parseCodexCatalog(text: unknown): ModelConfig[] | null {
+  let parsed: unknown
   try {
     parsed = JSON.parse(String(text))
   } catch {
     return null
   }
   const entries = isRecord(parsed) && Array.isArray(parsed.models) ? parsed.models : []
-  const models = []
+  const models: ModelConfig[] = []
   for (const entry of entries) {
     if (!isRecord(entry)) continue
     if (typeof entry.visibility === 'string' && entry.visibility !== 'list') continue
     const id = modelIdOf(entry.slug ?? entry.id)
     if (id === null || models.some((model) => model.id === id)) continue
-    const efforts = []
+    const efforts: string[] = []
     const levels = Array.isArray(entry.supported_reasoning_levels) ? entry.supported_reasoning_levels : []
     for (const level of levels) {
       if (!isRecord(level)) continue
@@ -446,15 +507,15 @@ export function parseCodexCatalog(text) {
  * @param text - 响应正文。
  * @returns 模型数组；JSON 不可解析时返回 null。
  */
-export function parseClaudeModelList(text) {
-  let parsed
+export function parseClaudeModelList(text: unknown): ModelConfig[] | null {
+  let parsed: unknown
   try {
     parsed = JSON.parse(String(text))
   } catch {
     return null
   }
   const entries = isRecord(parsed) && Array.isArray(parsed.data) ? parsed.data : []
-  const models = []
+  const models: ModelConfig[] = []
   for (const entry of entries) {
     if (!isRecord(entry)) continue
     const id = modelIdOf(entry.id)
@@ -471,16 +532,16 @@ export function parseClaudeModelList(text) {
  * @param baseURL - `ANTHROPIC_BASE_URL`（已去空白）。
  * @returns 清单 URL。
  */
-export function anthropicListingUrl(baseURL) {
+export function anthropicListingUrl(baseURL: unknown): string {
   const base = String(baseURL).trim().replace(/\/+$/, '')
   const root = base.endsWith('/v1') ? base.slice(0, -3) : base
   return `${root}/v1/models?limit=${String(ANTHROPIC_MODEL_LIMIT)}`
 }
 
 /** 读取 Claude 设置文件（可注入 readFile；缺失/坏 JSON 都当空对象）。 */
-function readClaudeSettings(path, readFile) {
+function readClaudeSettings(path: string, readFile: (path: string) => unknown): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(String(readFile(path)))
+    const parsed: unknown = JSON.parse(String(readFile(path)))
     return isRecord(parsed) ? parsed : {}
   } catch {
     return {}
@@ -497,7 +558,7 @@ function readClaudeSettings(path, readFile) {
  * @param options - `env`、`home`、`readFile` 注入点。
  * @returns `{ baseURL, authToken, apiKey }`（后两者可能为 undefined）。
  */
-export function claudeApiConfig(options = {}) {
+export function claudeApiConfig(options: DiscoveryDeps = {}): ClaudeApiConfig {
   const env = options.env ?? process.env
   const home = options.home ?? homedir()
   const readFile = options.readFile ?? ((file) => readFileSync(file, 'utf8'))
@@ -506,7 +567,7 @@ export function claudeApiConfig(options = {}) {
     : join(home, '.claude')
   const settings = readClaudeSettings(join(configured, 'settings.json'), readFile)
   const settingsEnv = isRecord(settings.env) ? settings.env : {}
-  const read = (source, key) => {
+  const read = (source: Record<string, unknown>, key: string) => {
     const value = source[key]
     return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
   }
@@ -527,8 +588,8 @@ export function claudeApiConfig(options = {}) {
 }
 
 /** Claude 请求头：AUTH_TOKEN 走 Bearer，API key 走 x-api-key；都没有返回 null。 */
-function claudeAuthHeaders(api) {
-  const headers = { accept: 'application/json', 'anthropic-version': ANTHROPIC_VERSION }
+function claudeAuthHeaders(api: ClaudeApiConfig): Record<string, string> | null {
+  const headers: Record<string, string> = { accept: 'application/json', 'anthropic-version': ANTHROPIC_VERSION }
   if (api.authToken !== undefined) headers.authorization = `Bearer ${api.authToken}`
   else if (api.apiKey !== undefined) headers['x-api-key'] = api.apiKey
   else return null
@@ -536,12 +597,12 @@ function claudeAuthHeaders(api) {
 }
 
 /** 统一成功结果。 */
-function discovered(cli, models, source) {
+function discovered(cli: string, models: ModelConfig[], source: string): DiscoveryResult {
   return { cli, models, source, error: null }
 }
 
 /** 统一失败结果（models 为空，error 只含 code/status）。 */
-function discoveryFailed(cli, code, status) {
+function discoveryFailed(cli: string, code: string, status?: number): DiscoveryResult {
   return {
     cli,
     models: [],
@@ -558,7 +619,7 @@ function discoveryFailed(cli, code, status) {
  * @param deps - `env`、`home`、`readFile`、`fetch`、`timeoutMs` 注入点。
  * @returns `{ cli, models, source, error }`。
  */
-export async function discoverClaudeModels(deps = {}) {
+export async function discoverClaudeModels(deps: DiscoveryDeps = {}): Promise<DiscoveryResult> {
   const api = claudeApiConfig(deps)
   const headers = claudeAuthHeaders(api)
   if (headers === null) return discoveryFailed('claude', 'no-credentials')
@@ -597,9 +658,9 @@ export async function discoverClaudeModels(deps = {}) {
 }
 
 /** 运行 `codex debug models`：成功返回 stdout，失败/超时返回 undefined。 */
-function runCodexOutput(path, args, options = {}) {
+function runCodexOutput(path: string, args: string[], options: { timeoutMs?: number } = {}): Promise<string | undefined> {
   const timeoutMs = options.timeoutMs ?? DISCOVERY_TIMEOUT_MS
-  return new Promise((resolve) => {
+  return new Promise<string | undefined>((resolve) => {
     execFile(path, args, {
       timeout: timeoutMs,
       killSignal: 'SIGKILL',
@@ -627,7 +688,7 @@ function runCodexOutput(path, args, options = {}) {
  *   `fallbackTimeoutMs` 注入点。
  * @returns `{ cli, models, source, error }`。
  */
-export async function discoverCodexModels(config, deps = {}) {
+export async function discoverCodexModels(config: unknown, deps: DiscoveryDeps = {}): Promise<DiscoveryResult> {
   const backend = normalizeConfig(config).subagents.codex
   const env = deps.env ?? process.env
   const home = deps.home ?? homedir()
@@ -655,7 +716,7 @@ export async function discoverCodexModels(config, deps = {}) {
  * @param deps - 两个发现函数的注入点合集。
  * @returns `{ cli, models, source, error }`。
  */
-export async function discoverModels(cli, config, deps = {}) {
+export async function discoverModels(cli: string, config: unknown, deps: DiscoveryDeps = {}): Promise<DiscoveryResult> {
   if (cli === 'codex') return discoverCodexModels(config, deps)
   if (cli === 'claude') return discoverClaudeModels(deps)
   throw new Error(`unknown discovery cli: ${String(cli)}`)
@@ -665,12 +726,12 @@ export async function discoverModels(cli, config, deps = {}) {
 // 改编自 dsh-better-sidebar src/trust-fence.ts（其源头为 BSD-3-Clause 的
 // @deepseek-ai/dsh-client-connection api-request-trust + loopback-hostname）。
 
-function headerOf(req, name) {
+function headerOf(req: IncomingMessage, name: string): string | undefined {
   const value = req.headers?.[name]
   return typeof value === 'string' ? value : undefined
 }
 
-function parseAuthority(authority) {
+function parseAuthority(authority: string): URL | undefined {
   try {
     return new URL(`http://${authority}`)
   } catch {
@@ -678,7 +739,7 @@ function parseAuthority(authority) {
   }
 }
 
-function isLoopbackHostname(hostname) {
+function isLoopbackHostname(hostname: string): boolean {
   if (hostname === 'localhost' || hostname === '[::1]') return true
   const parts = hostname.split('.')
   return parts.length === 4
@@ -687,7 +748,7 @@ function isLoopbackHostname(hostname) {
 }
 
 /** Host 是 loopback（或配置的受信权威）且浏览器标志同源。 */
-function isTrustedApiRequest(req, trustedHosts) {
+function isTrustedApiRequest(req: IncomingMessage, trustedHosts: string[]): boolean {
   const host = headerOf(req, 'host')
   if (host === undefined) return false
   const hostUrl = parseAuthority(host)
@@ -709,7 +770,7 @@ function isTrustedApiRequest(req, trustedHosts) {
 
 // ── 路由 ─────────────────────────────────────────────────────────────────────
 
-function writeJson(res, status, body) {
+function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(body))
 }
@@ -726,12 +787,12 @@ function writeJson(res, status, body) {
  * @param deps - 探针注入点；`read` / `discover` 可直接替换实现（测试用）。
  * @returns disposer 由 `ctx.effect` 持有。
  */
-export function registerCapabilitiesRoute(ctx, configFor, deps = {}) {
+export function registerCapabilitiesRoute(ctx: Context, configFor: unknown, deps: RouteDeps = {}) {
   const read = deps.read ?? createCapabilitiesReader(deps)
   const discover = deps.discover ?? discoverModels
   const routes = deps.routes ?? (() => collectTierRoutes(ctx))
-  const configOf = () => (typeof configFor === 'function' ? attempt(configFor) : configFor)
-  const handler = async (req, res) => {
+  const configOf = () => (typeof configFor === 'function' ? attempt(configFor as () => unknown) : configFor)
+  const handler = async (req: IncomingMessage, res: ServerResponse) => {
       try {
         const config = currentConfig(ctx, configOf())
         if (!isTrustedApiRequest(req, config.trustedHosts)) {
@@ -766,11 +827,11 @@ export function registerCapabilitiesRoute(ctx, configFor, deps = {}) {
             return
           }
           const cli = url.searchParams.get('cli')
-          if (!DISCOVERY_CLIS.includes(cli)) {
+          if (!DISCOVERY_CLIS.includes(cli as string)) {
             writeJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'unknown cli' } })
             return
           }
-          const value = await discover(cli, config)
+          const value = await discover(cli as string, config)
           // 发现是按需触发的探测，不能被浏览器缓存成旧清单。
           res.setHeader?.('cache-control', 'no-store')
           writeJson(res, 200, { ok: true, value })
@@ -793,8 +854,12 @@ export function registerCapabilitiesRoute(ctx, configFor, deps = {}) {
       }
   }
   ctx.effect(() => {
-    const offCanonical = ctx.webServer.register({ kind: 'prefix', path: CAPABILITIES_PREFIX, handler })
-    const offAlias = ctx.webServer.register({ kind: 'prefix', path: CAPABILITIES_ALIAS_PREFIX, handler })
+    // The handler applies its own loopback/trustedHosts fence, so the host route
+    // stays anonymous. DSH 0.2.3 made web routes required-auth by default; a
+    // required route would answer 503 for trusted loopback callers that carry no
+    // GUI credential.
+    const offCanonical = ctx.webServer.register({ kind: 'prefix', path: CAPABILITIES_PREFIX, handler, auth: 'anonymous' })
+    const offAlias = ctx.webServer.register({ kind: 'prefix', path: CAPABILITIES_ALIAS_PREFIX, handler, auth: 'anonymous' })
     return () => {
       if (typeof offCanonical === 'function') offCanonical()
       if (typeof offAlias === 'function') offAlias()

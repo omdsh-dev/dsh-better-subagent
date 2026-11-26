@@ -6,7 +6,9 @@
  * (older profile or a deployment without PTC) this is a no-op, so the rest of
  * the subagent plugin still loads.
  */
-export function mountPtcExemption(ctx) {
+import type { Context } from '@deepseek-ai/cordis'
+
+export function mountPtcExemption(ctx: Context) {
   if (typeof ctx.inject !== 'function') return
   ctx.inject(['betterPtc'], (runtime) => {
     if (runtime?.betterPtc === undefined) return

@@ -20,6 +20,8 @@
  * (S4), which owns the migration decision and the old files.
  */
 
+import type { Context } from '@deepseek-ai/cordis'
+
 import { registerCapabilitiesRoute } from './panel.js'
 
 /**
@@ -32,7 +34,7 @@ import { registerCapabilitiesRoute } from './panel.js'
  * @param options - test seams: `route` is forwarded to
  *   {@link registerCapabilitiesRoute}.
  */
-export function mountSettings(ctx, config, options = {}) {
+export function mountSettings(ctx: Context, config: unknown, options: { route?: Parameters<typeof registerCapabilitiesRoute>[2] } = {}) {
   ctx.inject(['webServer'], (webCtx) => {
     registerCapabilitiesRoute(webCtx, () => config, options.route)
   })
