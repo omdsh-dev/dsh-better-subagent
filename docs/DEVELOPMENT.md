@@ -7,7 +7,7 @@
 - 宿主源码使用严格 TypeScript（`src/index.ts`），构建为纯 ESM `lib/index.js` 与 `.d.ts`；浏览器源码 `src/client/index.ts` 经 esbuild 编译后包装为宿主加载的 `lib/client.js` closure。
 - `package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`；`dsh.client.platform = "web"`。
 - `files` 白名单：`lib`、`docs`、`cordis.patch.yml`、`README.md`、`LICENSE`、`third-party`。测试、脚本、设计 Spec、凭据、临时 profile 都不进发布包。
-- 依赖：运行时只直接 import `@deepseek-ai/schemastery`；其余 DSH 包是 peer 范围（`>=0.2.3-alpha.2 <0.3.0`），由宿主运行环境提供，服务全部经 `ctx` 获取。
+- 依赖：运行时只直接 import `@deepseek-ai/schemastery`；其余 DSH 包是 peer 范围（`>=0.2.3-alpha.3 <0.3.0`），由宿主运行环境提供，服务全部经 `ctx` 获取。
 - 浏览器半边只 `require('react')`，不 import 任何 DSH client 包；样式全部使用宿主主题 token（`--dsw-alias-*`），不写 DOM。
 
 ## 2. 宿主行与配置
